@@ -3,8 +3,8 @@
 """弹幕助手 · Aurora Dark
 
 单一弹幕流：聊天 + 粉丝团 Lv.15+ 入场混排；
-底部固定 5 条 >90 钻礼物，格式为：
-    Lv.16  ID 123456  送出了 嘉年华 ×2，价值 60,000 钻
+底部可滚动礼物栏，默认显示最近 5 条 >90 钻礼物，格式为：
+    消费Lv.26 粉丝Lv.16 小番茄 送出了【跑车】x1，价值1,200钻
 界面不显示时间戳，但 CSV / 导出网站仍保留完整时间。
 """
 
@@ -59,8 +59,11 @@ class AuroraApp:
 
         self.chat_count = 0
         self.gift_count = 0
+        self.total_events = 0
         self.gift_rows: dict[str, dict] = {}
         self.gift_order: list[str] = []
+        self._last_auto_export_events = -1
+        self._auto_export_job = None
 
         self._setup_style()
         self._build_topbar()
@@ -72,6 +75,7 @@ class AuroraApp:
         self.root.after(60, self._dark_titlebar)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.after(100, self.drain_events)
+        self.root.after(120_000, self._auto_export_loop)
 
     def _dark_titlebar(self):
         try:
@@ -798,11 +802,31 @@ class AuroraApp:
             self._set_status("已断开", MUTED)
 
     def on_close(self):
+        try:
+            if self.client is not None and self.total_events > 0:
+                self.export_site(open_browser=False, quiet=True)
+        except Exception:
+            pass
         if self.client is not None:
             self.client.stop()
         self.root.destroy()
 
-    def export_site(self):
+    def _auto_export_loop(self):
+        """定期把当天日志刷进静态站点；跨天时会自动生成新的日期页。"""
+        try:
+            if (
+                self.client is not None
+                and self.total_events > 0
+                and self.total_events != self._last_auto_export_events
+            ):
+                if self.export_site(open_browser=False, quiet=True):
+                    self._last_auto_export_events = self.total_events
+        except Exception:
+            pass
+        finally:
+            self._auto_export_job = self.root.after(120_000, self._auto_export_loop)
+
+    def export_site(self, open_browser: bool = True, quiet: bool = False) -> bool:
         try:
             import site_builder
 
@@ -812,12 +836,13 @@ class AuroraApp:
                     live_id = parse_live_id(self.room_var.get())
                 except Exception:
                     live_id = None
-            out = app_dir() / "site"
+            out = app_dir() / (f"site_{live_id}" if live_id else "site")
             logs = app_dir() / "logs"
             data = site_builder.load_messages_from_logs(logs, live_id=live_id)
             if not data:
-                messagebox.showinfo("导出网站", "还没有可导出的日志")
-                return
+                if not quiet:
+                    messagebox.showinfo("导出网站", "还没有可导出的日志")
+                return False
             meta = site_builder.load_room_meta(logs, live_id)
             anchor = str(meta.get("anchor_name") or "").strip()
             if anchor and live_id:
@@ -827,12 +852,17 @@ class AuroraApp:
             site_builder.build_site(
                 data, out, title=title, meta=meta, live_id=live_id
             )
-            import webbrowser
+            if open_browser:
+                import webbrowser
 
-            webbrowser.open((out / "index.html").as_uri())
-            messagebox.showinfo("导出网站", f"已导出 {len(data)} 条消息到：\n{out}")
+                webbrowser.open((out / "index.html").as_uri())
+            if not quiet:
+                messagebox.showinfo("导出网站", f"已导出 {len(data)} 条消息到：\n{out}")
+            return True
         except Exception as exc:
-            messagebox.showerror("导出网站失败", str(exc))
+            if not quiet:
+                messagebox.showerror("导出网站失败", str(exc))
+            return False
 
     # ------------------------------------------------------------------
     # 事件
@@ -853,6 +883,7 @@ class AuroraApp:
 
     def _handle(self, event: dict):
         kind = event.get("kind")
+        self.total_events += 1
         if kind == "chat":
             self._hide_chat_placeholder()
             level = int(event.get("fans_club_level") or 0)
@@ -979,6 +1010,7 @@ class AuroraApp:
         self._hide_gift_placeholder()
         self._show_gift_placeholder()
         self.chat_count = self.gift_count = 0
+        self.total_events = 0
         self.chat_badge.configure(text="0")
         self.gift_badge.configure(text="0")
         if self.chat_placeholder is None:

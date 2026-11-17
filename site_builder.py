@@ -587,6 +587,7 @@ h1 { margin: 10px 0 12px; font-size: clamp(34px, 5vw, 56px); line-height: 1.12; 
 .date-card .nums b { color: var(--text); font-size: 15px; font-weight: 650; }
 .date-card .top { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
 .date-card .top b { color: var(--gold); }
+.date-card .room-meta { margin-top: 10px; font-size: 12px; color: var(--muted); }
 .daynav { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 26px 0 18px; }
 .back { color: var(--muted); font-size: 13px; }
 .back:hover { color: var(--text); }
@@ -705,7 +706,6 @@ INDEX_TEMPLATE = """<!doctype html>
     <div class="kicker">Douyin Live Archive</div>
     <h1>直播弹幕与礼物<br>按天归档</h1>
     <p>所有弹幕、礼物、入场按时间戳保存；每一天一个页面，附当日全天礼物榜。__BADGE__</p>
-    <div class="room-meta">__ROOM_META__</div>
     <div class="hero-actions"><button class="btn" id="export-all">导出全部 CSV</button></div>
   </div>
   <div class="stats">
@@ -930,6 +930,7 @@ def _render_index(
         months.setdefault(month, []).append(day)
 
     sections: list[str] = []
+    meta_line = _room_meta_html(meta or {}, live_id)
     for month, dates in months.items():
         cards = []
         for day in dates:
@@ -945,6 +946,7 @@ def _render_index(
             cards.append(
                 f"""<a class="date-card" href="{day}.html">
   <div class="date"><span class="day">{day[5:]}</span><span class="weekday">{_weekday(day)}</span></div>
+  <div class="room-meta">{meta_line}</div>
   <div class="nums"><span><b>{stats['messages']}</b> 条</span><span><b>{stats['users']}</b> 人</span><span><b>{stats['diamonds']:,}</b> 钻</span></div>
   <div class="top">{top_text}</div>
 </a>"""
