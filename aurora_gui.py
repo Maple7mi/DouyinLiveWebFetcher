@@ -730,12 +730,20 @@ class AuroraApp:
                 except Exception:
                     live_id = None
             out = app_dir() / "site"
-            data = site_builder.load_messages_from_logs(app_dir() / "logs", live_id=live_id)
+            logs = app_dir() / "logs"
+            data = site_builder.load_messages_from_logs(logs, live_id=live_id)
             if not data:
                 messagebox.showinfo("导出网站", "还没有可导出的日志")
                 return
-            title = f"抖音弹幕归档 · {live_id}" if live_id else "抖音弹幕归档"
-            site_builder.build_site(data, out, title=title)
+            meta = site_builder.load_room_meta(logs, live_id)
+            anchor = str(meta.get("anchor_name") or "").strip()
+            if anchor and live_id:
+                title = f"{anchor} · 抖音弹幕归档 · {live_id}"
+            else:
+                title = f"抖音弹幕归档 · {live_id}" if live_id else "抖音弹幕归档"
+            site_builder.build_site(
+                data, out, title=title, meta=meta, live_id=live_id
+            )
             import webbrowser
 
             webbrowser.open((out / "index.html").as_uri())
@@ -940,14 +948,37 @@ def main():
     except Exception:
         pass
 
-    root = tk.Tk()
-    app = AuroraApp(root)
     room = None
     for index, arg in enumerate(sys.argv):
         if arg == "--room" and index + 1 < len(sys.argv):
             room = sys.argv[index + 1]
         elif arg.startswith("--room="):
             room = arg.split("=", 1)[1]
+
+    if "--export-site" in sys.argv:
+        import site_builder
+
+        live_id = parse_live_id(room) if room else ""
+        if not live_id:
+            print("EXPORT_SITE_ERROR missing --room")
+            return
+        log_dir = app_dir() / "logs"
+        rows = site_builder.load_messages_from_logs(log_dir, live_id)
+        meta = site_builder.load_room_meta(log_dir, live_id)
+        anchor = meta.get("anchor_name") or live_id
+        out = app_dir() / f"site_{live_id}"
+        site_builder.build_site(
+            rows,
+            out,
+            title=f"{anchor} · 抖音弹幕归档 · {live_id}",
+            meta=meta,
+            live_id=live_id,
+        )
+        print(f"EXPORT_SITE_OK {len(rows)} {out}")
+        return
+
+    root = tk.Tk()
+    app = AuroraApp(root)
     if room:
         app.room_var.set(room)
     if "--auto-connect" in sys.argv:

@@ -168,6 +168,30 @@ def _load_raw_gifts(
     return result
 
 
+def load_room_meta(log_dir: str | Path, live_id: str | None = None) -> dict[str, Any]:
+    """读取采集端保存的主播元数据；没有就返回空。"""
+    if not live_id:
+        return {}
+    path = Path(log_dir) / f"room_meta_{live_id}.json"
+    if not path.exists():
+        return {}
+    try:
+        meta = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def _room_meta_html(meta: dict[str, Any], live_id: str | None) -> str:
+    anchor = _clean(meta.get("anchor_name")) or "未记录主播"
+    room = _clean(meta.get("live_id") or live_id) or "-"
+    title = _clean(meta.get("title"))
+    parts = [f"主播：<b>{html.escape(anchor)}</b>", f"房间号：<b>{html.escape(room)}</b>"]
+    if title:
+        parts.append(html.escape(title))
+    return " · ".join(parts)
+
+
 def load_messages_from_logs(
     log_dir: str | Path, live_id: str | None = None
 ) -> list[dict[str, Any]]:
@@ -529,6 +553,10 @@ a { color: inherit; text-decoration: none; }
 .kicker { color: var(--accent2); font-size: 13px; letter-spacing: .18em; text-transform: uppercase; }
 h1 { margin: 10px 0 12px; font-size: clamp(34px, 5vw, 56px); line-height: 1.12; letter-spacing: -.02em; }
 .hero p { margin: 0; color: var(--muted); font-size: 16px; max-width: 760px; }
+.room-meta { margin-top: 10px; color: var(--muted); font-size: 13px; }
+.room-meta b { color: var(--text); font-weight: 650; }
+.hero .room-meta { max-width: 760px; }
+.hero-actions { margin-top: 16px; display: flex; gap: 8px; flex-wrap: wrap; }
 .demo-badge {
   display: inline-flex; align-items: center; gap: 7px; margin-left: 10px;
   padding: 4px 10px; border: 1px solid rgba(245,196,81,.35); border-radius: 999px;
@@ -565,11 +593,26 @@ h1 { margin: 10px 0 12px; font-size: clamp(34px, 5vw, 56px); line-height: 1.12; 
 .day-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px; margin: 6px 0 18px; }
 .day-title h1 { font-size: clamp(30px, 4vw, 46px); margin: 0; }
 .day-title .weekday { color: var(--muted); font-size: 15px; }
+.day-meta { margin: -8px 0 18px; color: var(--muted); font-size: 13px; }
+.day-meta b { color: var(--text); font-weight: 650; }
 .layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; }
 .card-head { padding: 15px 18px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .card-head h2 { margin: 0; font-size: 16px; }
 .card-head .hint { color: var(--muted); font-size: 11px; }
+.btn {
+  appearance: none; border: 1px solid rgba(245,196,81,.35); border-radius: 8px;
+  background: rgba(245,196,81,.08); color: var(--gold); cursor: pointer;
+  padding: 7px 11px; font: inherit; font-size: 12px; font-weight: 650;
+}
+.btn:hover { background: rgba(245,196,81,.16); }
+.board-sum {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  margin: 10px 14px 2px; padding: 8px 10px; border: 1px solid rgba(245,196,81,.22);
+  border-radius: 8px; background: rgba(245,196,81,.05); color: var(--muted); font-size: 11.5px;
+}
+.board-sum b { color: var(--gold); font-size: 15px; font-variant-numeric: tabular-nums; }
+.board-sum span { color: var(--muted); }
 .toolbar { display: flex; flex-wrap: wrap; gap: 8px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
 .tabs { display: flex; gap: 6px; flex-wrap: wrap; }
 .tab {
@@ -662,6 +705,8 @@ INDEX_TEMPLATE = """<!doctype html>
     <div class="kicker">Douyin Live Archive</div>
     <h1>直播弹幕与礼物<br>按天归档</h1>
     <p>所有弹幕、礼物、入场按时间戳保存；每一天一个页面，附当日全天礼物榜。__BADGE__</p>
+    <div class="room-meta">__ROOM_META__</div>
+    <div class="hero-actions"><button class="btn" id="export-all">导出全部 CSV</button></div>
   </div>
   <div class="stats">
     <div class="stat"><div class="label">收录天数</div><div class="value">__DAYS__</div><div class="sub">按自然日分类</div></div>
@@ -677,6 +722,25 @@ INDEX_TEMPLATE = """<!doctype html>
     <b>数据来源</b>：本地弹幕姬日志。__FOOTNOTE__
   </div>
 </div>
+<script>
+const ALL_DATA = __ALL_DATA__;
+function csvCell(value) {
+  const s = String(value == null ? "" : value);
+  return (s.includes('"') || s.includes(",") || s.includes(String.fromCharCode(10))) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+function downloadAllCsv() {
+  const cols = ["received_at","kind","user_id","nickname","fans_club_level","pay_level","content","gift_name","gift_count","diamonds"];
+  const lines = [cols.join(",")];
+  for (const r of ALL_DATA) lines.push(cols.map(c => csvCell(r[c])).join(","));
+  const blob = new Blob([String.fromCharCode(0xFEFF) + lines.join(String.fromCharCode(10))], {type: "text/csv;charset=utf-8"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "弹幕归档_全部.csv";
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+document.getElementById("export-all").addEventListener("click", downloadAllCsv);
+</script>
 </body>
 </html>
 """
@@ -694,6 +758,7 @@ DAY_TEMPLATE = """<!doctype html>
   <div class="brandbar"><span class="logo">弹</span><a href="index.html">__TITLE__</a></div>
   <div class="daynav"><a class="back" href="index.html">← 返回日期列表</a><span class="badge">__BADGE_TEXT__</span></div>
   <div class="day-title"><h1>__DATE__</h1><span class="weekday">__WEEKDAY__ · 直播记录</span></div>
+  <div class="day-meta">__ROOM_META__</div>
   <div class="stats">
     <div class="stat"><div class="label">消息总数</div><div class="value">__MESSAGES__</div><div class="sub">弹幕 __CHAT__ · 入场 __ENTRY__</div></div>
     <div class="stat"><div class="label">礼物事件</div><div class="value">__GIFTS__</div><div class="sub">连击已按整组合并</div></div>
@@ -713,6 +778,7 @@ DAY_TEMPLATE = """<!doctype html>
           <button class="tab" data-kind="entry">入场 <b>__ENTRY__</b></button>
         </div>
         <input id="search" class="search" placeholder="搜索昵称 / 用户 ID / 内容 / 礼物…">
+        <button class="btn" id="export-day">导出当日 CSV</button>
       </div>
       <div class="table-wrap">
         <table>
@@ -725,6 +791,7 @@ DAY_TEMPLATE = """<!doctype html>
 
     <div class="card">
       <div class="card-head"><h2>当日礼物榜</h2><span class="hint">按用户 ID 汇总</span></div>
+      <div class="board-sum">当日总额 <b>__DIAMONDS__ 钻</b><span>· __PAYERS__ 人付费 · 全部场次汇总</span></div>
       <div id="board" class="board"></div>
       <div class="legend">统计当天全部礼物，包括 1 钻小礼物；连击按整组合并后的总数量。</div>
     </div>
@@ -823,6 +890,24 @@ document.getElementById("search").addEventListener("input", e => {
 });
 renderRows();
 renderBoard();
+
+function csvCell(value) {
+  const s = String(value == null ? "" : value);
+  return (s.includes('"') || s.includes(",") || s.includes(String.fromCharCode(10))) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+function downloadDayCsv() {
+  const cols = ["received_at","kind","user_id","nickname","fans_club_level","pay_level","content","gift_name","gift_count","diamonds"];
+  const lines = [cols.join(",")];
+  for (const r of DATA) lines.push(cols.map(c => csvCell(r[c])).join(","));
+  const blob = new Blob([String.fromCharCode(0xFEFF) + lines.join(String.fromCharCode(10))], {type: "text/csv;charset=utf-8"});
+  const a = document.createElement("a");
+  const day = (DATA[0] && DATA[0].received_at ? DATA[0].received_at.slice(0, 10) : "day");
+  a.href = URL.createObjectURL(blob);
+  a.download = "弹幕归档_" + day + ".csv";
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+document.getElementById("export-day").addEventListener("click", downloadDayCsv);
 </script>
 </body>
 </html>
@@ -833,6 +918,8 @@ def _render_index(
     title: str,
     days: OrderedDict[str, list[dict[str, Any]]],
     mock: bool,
+    meta: dict[str, Any] | None = None,
+    live_id: str | None = None,
 ) -> str:
     total_rows = [r for rows in days.values() for r in rows]
     total_stats = _day_stats(total_rows)
@@ -878,13 +965,22 @@ def _render_index(
         "__PAYERS__": f"{total_stats['payers']:,}",
         "__DATE_SECTIONS__": "".join(sections) or '<div class="empty">还没有数据</div>',
         "__FOOTNOTE__": "当前为模拟数据，用于确认展示结构；接入真实日志后会自动按天生成。" if mock else "由弹幕姬本地日志生成。",
+        "__ROOM_META__": _room_meta_html(meta or {}, live_id),
+        "__ALL_DATA__": _json_for_script(total_rows),
     }
     for key, value in replacements.items():
         page = page.replace(key, value)
     return page
 
 
-def _render_day(title: str, day: str, rows: list[dict[str, Any]], mock: bool) -> str:
+def _render_day(
+    title: str,
+    day: str,
+    rows: list[dict[str, Any]],
+    mock: bool,
+    meta: dict[str, Any] | None = None,
+    live_id: str | None = None,
+) -> str:
     stats = _day_stats(rows)
     board = _leaderboard(rows)
     badge_text = "模拟数据" if mock else "真实记录"
@@ -903,6 +999,7 @@ def _render_day(title: str, day: str, rows: list[dict[str, Any]], mock: bool) ->
         "__PAYERS__": f"{stats['payers']:,}",
         "__DATA__": _json_for_script(rows),
         "__BOARD__": _json_for_script(board),
+        "__ROOM_META__": _room_meta_html(meta or {}, live_id),
     }
     for key, value in replacements.items():
         page = page.replace(key, value)
@@ -914,19 +1011,27 @@ def build_site(
     out_dir: str | Path,
     title: str = "抖音弹幕归档",
     mock: bool = False,
+    meta: dict[str, Any] | None = None,
+    live_id: str | None = None,
 ) -> Path:
     out = Path(out_dir)
     (out / "assets").mkdir(parents=True, exist_ok=True)
     (out / "assets" / "style.css").write_text(CSS, encoding="utf-8")
     days = _group_days(rows)
-    (out / "index.html").write_text(_render_index(title, days, mock), encoding="utf-8")
+    (out / "index.html").write_text(
+        _render_index(title, days, mock, meta=meta, live_id=live_id), encoding="utf-8"
+    )
     for day, day_rows in days.items():
         (out / f"{day}.html").write_text(
-            _render_day(title, day, day_rows, mock), encoding="utf-8"
+            _render_day(title, day, day_rows, mock, meta=meta, live_id=live_id),
+            encoding="utf-8",
         )
     manifest = {
         "title": title,
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "live_id": (meta or {}).get("live_id") or live_id,
+        "anchor_name": (meta or {}).get("anchor_name", ""),
+        "room_id": (meta or {}).get("room_id", ""),
         "days": [
             {"date": day, "messages": len(day_rows), **_day_stats(day_rows)}
             for day, day_rows in days.items()
@@ -950,11 +1055,15 @@ def main() -> None:
     if args.mock:
         rows = mock_messages()
         mock = True
+        meta = {"live_id": "617650815017", "anchor_name": "小绿喵喵"}
     else:
         rows = load_messages_from_logs(args.logs, live_id=args.live_id)
         mock = False
+        meta = load_room_meta(args.logs, args.live_id)
 
-    out = build_site(rows, args.out, title=args.title, mock=mock)
+    out = build_site(
+        rows, args.out, title=args.title, mock=mock, meta=meta, live_id=args.live_id
+    )
     print(f"OK {len(rows)} messages -> {out.resolve()}")
     print((out / "index.html").resolve())
 

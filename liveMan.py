@@ -9,6 +9,7 @@
 import codecs
 import gzip
 import hashlib
+import json
 import os
 import random
 import re
@@ -307,6 +308,75 @@ class DouyinLiveWebFetcher:
             nickname = user.get('nickname')
             print(f"【{nickname}】[{user_id}]直播间：{['正在直播', '已结束'][bool(room_status)]}.")
     
+    def fetch_room_meta(self) -> dict:
+        """抓取主播昵称、真实 room_id、直播间标题，供导出网站显示。"""
+        page_headers = {
+            "User-Agent": self.user_agent,
+            "cookie": self._cookie_header(),
+        }
+        try:
+            page = self.session.get(
+                self.live_url + self.live_id, headers=page_headers, timeout=15
+            )
+            text = page.content.decode("utf-8", errors="ignore")
+            anchor_match = re.search(
+                r'\\"anchor\\":\{.*?\\"nickname\\":\\"([^\\"]+)\\"', text, re.S
+            )
+            room_match = re.search(r'\\"roomId\\":\\"(\d+)\\"', text)
+            title_match = re.search(
+                r'\\"roomInfo\\":\{\\"room\\":\{.*?\\"title\\":\\"([^\\"]*)\\"',
+                text,
+                re.S,
+            )
+            if anchor_match:
+                return {
+                    "live_id": str(self.live_id),
+                    "anchor_name": anchor_match.group(1),
+                    "anchor_id": "",
+                    "room_id": room_match.group(1) if room_match else str(self.room_id),
+                    "title": title_match.group(1) if title_match else "",
+                    "room_status": None,
+                    "captured_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                }
+        except Exception:
+            pass
+
+        msToken = generateMsToken()
+        nonce = self.get_ac_nonce()
+        signature = self.get_ac_signature(nonce)
+        url = ('https://live.douyin.com/webcast/room/web/enter/?aid=6383'
+               '&app_name=douyin_web&live_id=1&device_platform=web&language=zh-CN&enter_from=page_refresh'
+               '&cookie_enabled=true&screen_width=5120&screen_height=1440&browser_language=zh-CN&browser_platform=Win32'
+               '&browser_name=Edge&browser_version=140.0.0.0'
+               f'&web_rid={self.live_id}'
+               f'&room_id_str={self.room_id}'
+               '&enter_source=&is_need_double_stream=false&insert_task_id=&live_reason=&msToken=' + msToken)
+        query = parse_url(url).query
+        params = {i[0]: i[1] for i in [j.split('=') for j in query.split('&')]}
+        a_bogus = self.get_a_bogus(params)
+        url += f"&a_bogus={a_bogus}"
+        headers = self.headers.copy()
+        headers.update({
+            'Referer': f'https://live.douyin.com/{self.live_id}',
+            'Cookie': f'{self._cookie_header()};__ac_nonce={nonce}; __ac_signature={signature}',
+        })
+        resp = self.session.get(url, headers=headers, timeout=10)
+        resp.encoding = "utf-8"
+        payload = resp.json() or {}
+        data = payload.get('data') or {}
+        rooms = data.get('data') or []
+        room = rooms[0] if isinstance(rooms, list) and rooms else {}
+        owner = room.get('owner') or {}
+        return {
+            "live_id": str(self.live_id),
+            "anchor_name": owner.get("nickname") or "",
+            "anchor_id": owner.get("id_str") or "",
+            "room_id": room.get("id_str") or str(self.room_id),
+            "title": room.get("title") or "",
+            "room_status": data.get("room_status"),
+            "captured_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
     def _connectWebSocket(self):
         """
         连接抖音直播间websocket服务器，请求直播间数据

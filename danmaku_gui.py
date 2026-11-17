@@ -110,6 +110,7 @@ class DanmakuClient(DouyinLiveWebFetcher):
     # -- 生命周期 ---------------------------------------------------------
     def run(self):
         self._open_logs()
+        self._capture_room_meta()
         try:
             while not self._stop.is_set():
                 self._emit("status", state="connecting", text="连接中…")
@@ -163,6 +164,22 @@ class DanmakuClient(DouyinLiveWebFetcher):
         self._gift_raw = (logs / f"gifts_raw_{self.live_id}_{stamp}.jsonl").open(
             "w", encoding="utf-8"
         )
+
+    def _capture_room_meta(self):
+        """记录主播昵称/房间号，供导出网站读取；失败不影响采集。"""
+        try:
+            meta = self.fetch_room_meta()
+            self._debug(f"room meta: {meta!r}")
+            if not meta.get("anchor_name"):
+                return
+            path = app_dir() / "logs" / f"room_meta_{self.live_id}.json"
+            path.parent.mkdir(exist_ok=True)
+            path.write_text(
+                json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            self._debug(f"room meta saved: {path}")
+        except Exception as exc:
+            self._debug(f"room meta failed: {exc!r}")
 
     def _close_logs(self):
         for handle in (self._csv_file, self._gift_raw):
