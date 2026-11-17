@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1600, initial-scale=1">
+<title>Primer Grid · 弹幕助手 UI 方向</title>
+<style>
+*{box-sizing:border-box}
+html,body{width:1600px;height:1000px;margin:0;overflow:hidden}
+body{background:var(--bg);color:var(--text);font-family:var(--font);-webkit-font-smoothing:antialiased}
+button{font:inherit}
+.app{position:relative;width:1600px;height:1000px;padding:20px 24px 16px;display:flex;flex-direction:column;gap:12px;overflow:hidden}
+.topbar{height:60px;flex:none;display:flex;align-items:center;gap:12px;position:relative;z-index:2}
+.brand{display:flex;align-items:center;gap:12px;min-width:270px}
+.logo{width:40px;height:40px;border-radius:11px;background:linear-gradient(135deg,var(--accent),var(--accent-2));color:var(--accent-contrast);display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:800;letter-spacing:-1px;box-shadow:0 8px 20px rgba(0,0,0,.18);flex:none}
+.brand h1{font-size:19px;line-height:1.1;margin:0;letter-spacing:.3px;font-weight:700}
+.brand p{font-size:10px;line-height:1.2;margin:4px 0 0;color:var(--muted);letter-spacing:.6px}
+.room-pill{margin-left:auto;height:36px;display:flex;align-items:center;gap:9px;padding:0 13px;border:1px solid var(--border);background:var(--panel-2);border-radius:999px;font-size:12px;white-space:nowrap}
+.live-tag{font-size:8px;line-height:1;font-weight:800;letter-spacing:1px;color:#fff;background:#ff2c55;padding:4px 5px;border-radius:4px}
+.room-name{font-weight:600}
+.room-id{font-family:var(--mono);font-size:10px;color:var(--muted)}
+.top-actions{display:flex;align-items:center;gap:8px}
+.btn{height:36px;padding:0 14px;border-radius:9px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:12px;font-weight:600;display:flex;align-items:center;gap:7px;cursor:default}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-contrast)}
+.status-dot{width:6px;height:6px;border-radius:50%;background:#43e08b;box-shadow:0 0 0 3px rgba(67,224,139,.14)}
+.dashboard{flex:1;min-height:0;display:grid;gap:12px;grid-template-columns:minmax(0,1.72fr) minmax(340px,.92fr);grid-template-rows:minmax(0,1fr) 112px;grid-template-areas:"chat side" "summary summary"}
+.layout-top .dashboard{grid-template-rows:104px minmax(0,1fr);grid-template-areas:"summary summary" "chat side"}
+.layout-mirror .dashboard{grid-template-columns:minmax(340px,.92fr) minmax(0,1.72fr);grid-template-rows:104px minmax(0,1fr);grid-template-areas:"summary summary" "side chat"}
+.layout-rail .dashboard{grid-template-columns:minmax(0,1fr) 350px 244px;grid-template-rows:minmax(0,1fr);grid-template-areas:"chat side summary"}
+.panel{position:relative;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);min-height:0;overflow:hidden;display:flex;flex-direction:column}
+.panel::before{content:"";position:absolute;left:0;top:18px;bottom:18px;width:3px;border-radius:0 3px 3px 0;background:var(--accent);opacity:.95;z-index:2}
+.chat{grid-area:chat}
+.side{grid-area:side;display:flex;flex-direction:column;gap:12px;min-height:0}
+.summary{grid-area:summary;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;min-height:0}
+.panel-head{flex:none;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 17px 9px;position:relative;z-index:1}
+.eyebrow{font-size:8px;letter-spacing:1.7px;line-height:1;color:var(--muted);font-weight:700;text-transform:uppercase}
+.panel-head h2{font-size:16px;line-height:1.2;margin:5px 0 0;font-weight:700;letter-spacing:.2px}
+.panel-head h2 .subtle{font-size:9px;color:var(--muted);font-weight:400;margin-left:5px;letter-spacing:0}
+.head-right{display:flex;align-items:center;gap:10px}
+.legend{display:flex;align-items:center;gap:6px;font-size:9px;color:var(--muted);white-space:nowrap}
+.legend i{display:inline-block;width:7px;height:7px;border-radius:2px;margin-left:3px}
+.dot-hot{background:var(--hot-bar)}
+.dot-super{background:var(--super-bar)}
+.badge{min-width:24px;height:20px;padding:0 7px;border-radius:999px;background:var(--panel-2);border:1px solid var(--border);display:inline-flex;align-items:center;justify-content:center;font-size:10px;color:var(--muted)}
+.panel-note{flex:none;padding:0 17px 8px;font-size:9px;color:var(--muted);letter-spacing:.2px}
+.chat-head{flex:none;display:grid;grid-template-columns:58px 58px 148px 1fr;align-items:center;gap:0;padding:8px 17px;border-top:1px solid var(--border);border-bottom:1px solid var(--border);background:var(--panel-2);font-size:9px;line-height:1;letter-spacing:.7px;color:var(--muted);font-weight:600;text-transform:uppercase}
+.chat-list{flex:1;min-height:0;overflow:hidden}
+.chat-row{display:grid;grid-template-columns:58px 58px 148px 1fr;align-items:center;min-height:42px;padding:7px 17px;border-bottom:1px solid var(--border-soft);font-size:12.5px;line-height:1.35}
+.chat-row:last-child{border-bottom:0}
+.chat-row.super{background:var(--super-bg);color:var(--super-text);border-left:3px solid var(--super-bar);padding-left:14px}
+.chat-row.hot{background:var(--hot-bg);color:var(--hot-text);border-left:3px solid var(--hot-bar);padding-left:14px}
+.chat-row.super .lv,.chat-row.super .nick,.chat-row.super .content{color:inherit}
+.chat-row.hot .lv,.chat-row.hot .nick,.chat-row.hot .content{color:inherit}
+.lv{font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:.2px}
+.nick{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:8px}
+.content{color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.panel-foot{flex:none;display:flex;align-items:center;justify-content:space-between;padding:8px 17px;border-top:1px solid var(--border);font-size:9px;color:var(--muted);background:var(--panel-2)}
+.side .panel-head{padding-top:12px;padding-bottom:6px}
+.side .panel-head h2{font-size:14px}
+.entry-panel{flex:0 0 34%}
+.gift-panel{flex:1}
+.entry-row{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;padding:9px 17px;border-bottom:1px solid var(--border-soft);font-size:11.5px}
+.entry-row:last-child{border-bottom:0}
+.entry-who{display:flex;align-items:center;gap:8px;min-width:0}
+.entry-name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.entry-lv{font-family:var(--mono);font-size:10px;color:var(--gold);white-space:nowrap}
+.entry-time{font-family:var(--mono);font-size:9px;color:var(--muted)}
+.gift-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;padding:9px 17px;border-bottom:1px solid var(--border-soft);font-size:11px}
+.gift-row:last-child{border-bottom:0}
+.gift-main{display:flex;align-items:baseline;gap:7px;min-width:0;white-space:nowrap}
+.gift-id{font-family:var(--mono);font-size:9.5px;color:var(--muted)}
+.gift-name{font-weight:700;font-size:12px;color:var(--text);overflow:hidden;text-overflow:ellipsis}
+.gift-count{font-size:10px;color:var(--muted)}
+.gift-value{font-family:var(--number-font);font-size:15px;font-weight:700;color:var(--gold);white-space:nowrap;text-align:right}
+.gift-value span{font-family:var(--font);font-size:8px;font-weight:400;color:var(--muted);margin-left:2px}
+.metric{position:relative;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:13px 15px;display:flex;flex-direction:column;justify-content:center;min-height:0;overflow:hidden}
+.metric::before{content:"";width:26px;height:3px;border-radius:2px;background:var(--accent);margin-bottom:8px;opacity:.9}
+.metric:nth-child(2)::before{background:var(--blue)}
+.metric:nth-child(3)::before{background:var(--purple)}
+.metric:nth-child(4)::before{background:var(--gold)}
+.metric:nth-child(5)::before{background:var(--muted)}
+.metric span{font-size:9px;letter-spacing:.8px;color:var(--muted);font-weight:600;text-transform:uppercase}
+.metric strong{font-family:var(--number-font);font-size:27px;line-height:1.15;font-weight:700;letter-spacing:-.5px;margin-top:2px}
+.metric small{font-family:var(--font);font-size:9px;color:var(--muted);font-weight:400;margin-left:3px}
+.layout-rail .summary{display:flex;flex-direction:column;gap:9px;background:transparent;border:0;box-shadow:none;padding:0}
+.layout-rail .metric{flex:1;padding:12px 14px}
+.layout-rail .metric strong{font-size:23px}
+.layout-rail .metric::before{margin-bottom:6px;width:20px}
+
+/* 01 Aurora */
+body.theme-aurora{--bg:#07080d;--panel:#0e1018;--panel-2:#12151f;--border:#232838;--border-soft:#181d2a;--text:#eef2ff;--muted:#8b93a7;--accent:#7c8cff;--accent-2:#b06cff;--accent-contrast:#080a12;--gold:#f5c451;--hot-bg:rgba(245,196,81,.12);--hot-text:#ffd987;--hot-bar:#f5c451;--super-bg:rgba(255,86,120,.14);--super-text:#ffb3c0;--super-bar:#ff5678;--blue:#79b8ff;--purple:#c792ea;--radius:14px;--shadow:0 18px 50px rgba(0,0,0,.26);--mono:"Cascadia Code",Consolas,monospace;--number-font:"Segoe UI","Microsoft YaHei UI",sans-serif;--font:"Microsoft YaHei UI","Segoe UI",sans-serif;background:radial-gradient(900px 480px at 78% -12%,rgba(124,140,255,.2),transparent 62%),radial-gradient(700px 400px at 8% 108%,rgba(176,108,255,.08),transparent 60%),#07080d}
+.theme-aurora .panel{background:linear-gradient(180deg,rgba(17,20,29,.96),rgba(13,16,24,.96))}
+.theme-aurora .metric{background:linear-gradient(180deg,#11141d,#0d1018)}
+.theme-aurora .brand h1{background:linear-gradient(90deg,#fff,#c8ceff);-webkit-background-clip:text;background-clip:text;color:transparent}
+.theme-aurora .btn.primary{box-shadow:0 8px 22px rgba(124,140,255,.25)}
+.theme-aurora .live-tag{background:#ff5678}
+
+/* 02 Paper */
+body.theme-paper{--bg:#f5f3ee;--panel:#fffefa;--panel-2:#f1eee7;--border:#ddd8cd;--border-soft:#ebe6dc;--text:#1b1a17;--muted:#7d766a;--accent:#1b1a17;--accent-2:#8d7b5f;--accent-contrast:#fffefa;--gold:#9a6b1f;--hot-bg:#f7ecd0;--hot-text:#5a460f;--hot-bar:#c79a3d;--super-bg:#f3dfe0;--super-text:#6e1f27;--super-bar:#b76a73;--blue:#456c8a;--purple:#7d5d86;--radius:10px;--shadow:0 1px 0 rgba(27,26,23,.03);--mono:"Cascadia Code",Consolas,monospace;--number-font:Georgia,"Times New Roman",serif;--font:"Songti SC","SimSun",Georgia,serif;background:#f5f3ee}
+.theme-paper .topbar{border-bottom:1px solid var(--border);padding-bottom:9px;height:64px}
+.theme-paper .logo{border-radius:50%;background:#1b1a17;box-shadow:none;font-family:var(--font)}
+.theme-paper .brand h1{font-family:Georgia,"Songti SC","SimSun",serif;font-size:22px;letter-spacing:.2px}
+.theme-paper .brand p,.theme-paper .room-id{letter-spacing:.3px}
+.theme-paper .panel{border-radius:2px;box-shadow:none}
+.theme-paper .panel::before{top:14px;bottom:14px;width:2px;background:#8d7b5f;opacity:.7}
+.theme-paper .chat-head,.theme-paper .panel-foot{background:transparent}
+.theme-paper .chat-row{font-family:"Microsoft YaHei UI",sans-serif;font-size:12.5px}
+.theme-paper .metric{background:transparent;border:0;border-top:1px solid var(--border);border-radius:0;box-shadow:none;padding:10px 13px}
+.theme-paper .metric::before{display:none}
+.theme-paper .metric strong{font-size:28px;font-weight:400}
+.theme-paper .badge{border-radius:2px;background:transparent}
+.theme-paper .btn{border-radius:2px;background:transparent}
+.theme-paper .btn.primary{background:#1b1a17;color:#fffefa}
+
+/* 03 Primer */
+body.theme-primer{--bg:#f6f8fa;--panel:#ffffff;--panel-2:#f6f8fa;--border:#d0d7de;--border-soft:#eaeef2;--text:#1f2328;--muted:#656d76;--accent:#0969da;--accent-2:#1f883d;--accent-contrast:#fff;--gold:#9a6700;--hot-bg:#fff8c5;--hot-text:#4d2d00;--hot-bar:#d4a72c;--super-bg:#ffebe9;--super-text:#82071e;--super-bar:#cf222e;--blue:#0969da;--purple:#8250df;--radius:6px;--shadow:none;--mono:"Cascadia Code",Consolas,monospace;--number-font:"Segoe UI","Microsoft YaHei UI",sans-serif;--font:"Microsoft YaHei UI","Segoe UI",sans-serif;background:#f6f8fa}
+.theme-primer .topbar{height:58px;background:#24292f;border:1px solid #24292f;border-radius:6px;padding:0 14px;color:#fff}
+.theme-primer .brand h1{color:#fff;font-size:17px}
+.theme-primer .brand p{color:#8b949e}
+.theme-primer .logo{background:#f6f8fa;color:#24292f;border:1px solid #57606a;border-radius:6px;box-shadow:none}
+.theme-primer .room-pill{background:#32383f;border-color:#444c56;color:#c9d1d9}
+.theme-primer .room-id{color:#8b949e}
+.theme-primer .live-tag{background:#238636}
+.theme-primer .btn.ghost{background:#21262d;border-color:#444c56;color:#c9d1d9}
+.theme-primer .btn.primary{background:#238636;border-color:#238636}
+.theme-primer .panel{box-shadow:none}
+.theme-primer .panel::before{display:none}
+.theme-primer .panel-head{padding-top:12px;padding-bottom:6px;border-bottom:1px solid var(--border)}
+.theme-primer .eyebrow{letter-spacing:1px;color:#57606a}
+.theme-primer .chat-head{background:#f6f8fa;border-top:0}
+.theme-primer .chat-row{min-height:41px;font-size:12px}
+.theme-primer .metric{box-shadow:none;padding:11px 14px}
+.theme-primer .metric::before{display:none}
+.theme-primer .metric strong{font-size:24px;font-family:var(--mono);letter-spacing:-1px}
+.theme-primer .badge{background:#eaeef2;border-color:#d0d7de}
+.theme-primer .panel-foot{background:#f6f8fa}
+
+/* 04 Discord */
+body.theme-discord{--bg:#313338;--panel:#2b2d31;--panel-2:#232428;--border:#1e1f22;--border-soft:#26282c;--text:#f2f3f5;--muted:#949ba4;--accent:#5865f2;--accent-2:#4752c4;--accent-contrast:#fff;--gold:#f0b232;--hot-bg:#3d3524;--hot-text:#f6d99a;--hot-bar:#f0b232;--super-bg:#3c2830;--super-text:#ffb3c1;--super-bar:#eb459e;--blue:#00a8fc;--purple:#b380ff;--radius:8px;--shadow:none;--mono:"Cascadia Code",Consolas,monospace;--number-font:"Segoe UI","Microsoft YaHei UI",sans-serif;--font:"gg sans","Microsoft YaHei UI","Segoe UI",sans-serif;background:#313338}
+.theme-discord .app{padding-left:92px}
+.theme-discord .app::before{content:"";position:absolute;left:0;top:0;bottom:0;width:72px;background:#1e1f22;border-right:1px solid #111214}
+.theme-discord .app::after{content:"≡";position:absolute;left:16px;top:18px;width:40px;height:40px;border-radius:14px;background:#5865f2;color:#fff;display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:700;line-height:1;box-shadow:0 0 0 4px #2b2d31}
+.theme-discord .topbar{height:56px}
+.theme-discord .brand{min-width:250px}
+.theme-discord .brand h1{font-size:17px}
+.theme-discord .panel{background:#2b2d31;border:0;box-shadow:none}
+.theme-discord .panel::before{display:none}
+.theme-discord .chat{background:#313338;border:1px solid #26282c}
+.theme-discord .panel-head{padding-bottom:8px}
+.theme-discord .eyebrow{color:#949ba4}
+.theme-discord .chat-head{background:transparent;border-color:#3f4147;color:#949ba4}
+.theme-discord .chat-row{border-color:#3a3c42;min-height:45px;font-size:13px}
+.theme-discord .chat-row.super,.theme-discord .chat-row.hot{border-left-width:3px}
+.theme-discord .metric{background:#2b2d31;border:0;box-shadow:none}
+.theme-discord .metric::before{width:20px;height:2px}
+.theme-discord .btn.primary{background:#5865f2;border-color:#5865f2;border-radius:4px}
+.theme-discord .btn.ghost{border-radius:4px;background:#2b2d31;border-color:#1e1f22}
+.theme-discord .room-pill{background:#1e1f22;border-color:#1e1f22}
+.theme-discord .live-tag{background:#eb459e}
+
+/* 05 Twitch */
+body.theme-twitch{--bg:#0e0e10;--panel:#18181b;--panel-2:#1f1f23;--border:#2f2f35;--border-soft:#242429;--text:#efeff1;--muted:#adadb8;--accent:#9146ff;--accent-2:#772ce8;--accent-contrast:#fff;--gold:#ffd37a;--hot-bg:#2a2140;--hot-text:#e3d4ff;--hot-bar:#b38cff;--super-bg:#3a1f2b;--super-text:#ffc2d4;--super-bar:#ff4f8b;--blue:#58b5ff;--purple:#b38cff;--radius:6px;--shadow:none;--mono:"Cascadia Code",Consolas,monospace;--number-font:"Segoe UI","Microsoft YaHei UI",sans-serif;--font:"Inter","Microsoft YaHei UI","Segoe UI",sans-serif;background:radial-gradient(700px 440px at 100% 0,rgba(145,70,255,.18),transparent 65%),#0e0e10}
+.theme-twitch .topbar{height:58px;border-bottom:2px solid #2f2f35}
+.theme-twitch .brand h1{font-family:"Segoe UI","Microsoft YaHei UI",sans-serif;font-weight:800;letter-spacing:.2px}
+.theme-twitch .logo{background:#9146ff;border-radius:4px;box-shadow:0 0 24px rgba(145,70,255,.3)}
+.theme-twitch .live-tag{background:#eb0400;border-radius:2px;font-size:9px}
+.theme-twitch .room-pill{border-radius:4px;background:#18181b;border-color:#2f2f35}
+.theme-twitch .panel{border-radius:4px;border-color:#2f2f35;border-left:2px solid #9146ff}
+.theme-twitch .panel::before{display:none}
+.theme-twitch .panel-head{border-bottom:1px solid #2f2f35}
+.theme-twitch .chat-row{min-height:44px;font-size:13px}
+.theme-twitch .chat-row.super{background:linear-gradient(90deg,rgba(255,79,139,.16),transparent)}
+.theme-twitch .chat-row.hot{background:linear-gradient(90deg,rgba(179,140,255,.13),transparent)}
+.theme-twitch .metric{border-color:#2f2f35;background:#18181b}
+.theme-twitch .metric::before{height:2px;background:#9146ff}
+.theme-twitch .metric strong{font-size:26px}
+.theme-twitch .btn.primary{background:#9146ff;border-color:#9146ff;border-radius:4px}
+.theme-twitch .btn.ghost{background:#1f1f23;border-color:#2f2f35;border-radius:4px}
+.theme-twitch .eyebrow{color:#bf94ff}
+
+/* 06 Frost */
+body.theme-frost{--bg:#eef4ff;--panel:rgba(255,255,255,.66);--panel-2:rgba(255,255,255,.44);--border:rgba(255,255,255,.82);--border-soft:rgba(160,180,210,.18);--text:#1b2433;--muted:#6b7a90;--accent:#0a84ff;--accent-2:#64d2ff;--accent-contrast:#fff;--gold:#b26a00;--hot-bg:rgba(255,214,102,.34);--hot-text:#624400;--hot-bar:#e8ae36;--super-bg:rgba(255,120,140,.2);--super-text:#7e1f31;--super-bar:#e25a70;--blue:#0a84ff;--purple:#7d5cff;--radius:22px;--shadow:0 24px 60px rgba(40,70,120,.12);--mono:"Cascadia Code",Consolas,monospace;--number-font:"SF Pro Display","Segoe UI","Microsoft YaHei UI",sans-serif;--font:"SF Pro Text","Microsoft YaHei UI","Segoe UI",sans-serif;background:radial-gradient(900px 600px at 8% 0,#e6f1ff 0,transparent 55%),radial-gradient(800px 600px at 95% 20%,#f1e9ff 0,transparent 55%),linear-gradient(135deg,#eef6ff,#fbf0ff 52%,#eafaf6)}
+.theme-frost .panel,.theme-frost .metric{backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px);background:rgba(255,255,255,.64);border-color:rgba(255,255,255,.9);box-shadow:0 22px 60px rgba(40,70,120,.11)}
+.theme-frost .topbar{height:62px;background:rgba(255,255,255,.44);border:1px solid rgba(255,255,255,.8);border-radius:20px;padding:0 16px;backdrop-filter:blur(18px)}
+.theme-frost .logo{border-radius:13px;background:linear-gradient(135deg,#0a84ff,#64d2ff);box-shadow:0 8px 24px rgba(10,132,255,.25)}
+.theme-frost .panel::before{opacity:.8;top:20px;bottom:20px;width:3px}
+.theme-frost .chat-row{font-size:13px;min-height:44px}
+.theme-frost .chat-head{background:rgba(255,255,255,.35)}
+.theme-frost .metric strong{font-size:25px}
+.theme-frost .btn{border-radius:12px;background:rgba(255,255,255,.55)}
+.theme-frost .btn.primary{background:#0a84ff;border-color:#0a84ff;box-shadow:0 8px 22px rgba(10,132,255,.25)}
+.theme-frost .room-pill{background:rgba(255,255,255,.5)}
+
+/* 07 Neon */
+body.theme-neon{--bg:#05060a;--panel:#0a0d14;--panel-2:#0d111c;--border:#1b2a3a;--border-soft:#121c28;--text:#e9fdff;--muted:#6f8b9b;--accent:#00e5ff;--accent-2:#ff2d95;--accent-contrast:#041014;--gold:#ffe066;--hot-bg:rgba(0,229,255,.08);--hot-text:#aef9ff;--hot-bar:#00e5ff;--super-bg:rgba(255,45,149,.12);--super-text:#ffb3d1;--super-bar:#ff2d95;--blue:#00e5ff;--purple:#ff2d95;--radius:0;--shadow:0 0 0 1px rgba(0,229,255,.14),0 0 34px rgba(0,229,255,.07);--mono:"Cascadia Code",Consolas,monospace;--number-font:"Cascadia Code",Consolas,monospace;--font:"Microsoft YaHei UI","Segoe UI",sans-serif;background:radial-gradient(900px 500px at 85% -10%,rgba(0,229,255,.12),transparent 60%),radial-gradient(600px 400px at 10% 100%,rgba(255,45,149,.1),transparent 60%),#05060a}
+.theme-neon .panel,.theme-neon .metric{clip-path:polygon(0 0,calc(100% - 14px) 0,100% 14px,100% 100%,14px 100%,0 calc(100% - 14px));background:linear-gradient(180deg,#0c111d,#090d15);border-color:#164a5a}
+.theme-neon .panel-head h2{color:#00e5ff;text-shadow:0 0 18px rgba(0,229,255,.45)}
+.theme-neon .panel-head h2 .subtle{color:#6f8b9b;text-shadow:none}
+.theme-neon .eyebrow{color:#ff2d95}
+.theme-neon .logo{border-radius:0;background:linear-gradient(135deg,#00e5ff,#ff2d95);color:#041014;box-shadow:0 0 30px rgba(0,229,255,.28)}
+.theme-neon .brand h1{color:#e9fdff;text-shadow:0 0 20px rgba(0,229,255,.35)}
+.theme-neon .chat-row{font-family:var(--mono);font-size:11.5px;min-height:43px;border-color:#12212c}
+.theme-neon .chat-row.super{box-shadow:inset 0 0 24px rgba(255,45,149,.08)}
+.theme-neon .btn{border-radius:0;clip-path:polygon(0 0,calc(100% - 8px) 0,100% 8px,100% 100%,8px 100%,0 calc(100% - 8px));background:#0c111d;border-color:#1b4a5a}
+.theme-neon .btn.primary{background:#00e5ff;border-color:#00e5ff;color:#041014;box-shadow:0 0 22px rgba(0,229,255,.25)}
+.theme-neon .room-pill{border-radius:0;background:#0a0d14;border-color:#1b4a5a}
+.theme-neon .live-tag{border-radius:0;background:#ff2d95}
+.theme-neon .chat-head{background:#0a111a;color:#5c7a86;border-color:#164a5a}
+.theme-neon .metric::before{border-radius:0;background:#00e5ff;box-shadow:0 0 12px rgba(0,229,255,.5)}
+.theme-neon .metric strong{color:#e9fdff;text-shadow:0 0 16px rgba(0,229,255,.2)}
+.theme-neon .gift-value{color:#ffe066;text-shadow:0 0 12px rgba(255,224,102,.2)}
+
+/* 08 Cream */
+body.theme-cream{--bg:#fbf4ee;--panel:#fffaf5;--panel-2:#f7e9df;--border:#ead8ca;--border-soft:#f1e5db;--text:#3f2f2a;--muted:#9b7f72;--accent:#d98a8a;--accent-2:#b7c9a8;--accent-contrast:#fff;--gold:#b4763a;--hot-bg:#fbe7c9;--hot-text:#6b4513;--hot-bar:#d8a34a;--super-bg:#f6d7dd;--super-text:#7a2938;--super-bar:#d98a9a;--blue:#7f9fb7;--purple:#b38aa8;--radius:26px;--shadow:0 14px 34px rgba(122,81,60,.08);--mono:"Cascadia Code",Consolas,monospace;--number-font:"Segoe UI","Microsoft YaHei UI",sans-serif;--font:"Microsoft YaHei UI","Segoe UI",sans-serif;background:radial-gradient(700px 500px at 88% -10%,#ffe9e2,transparent 60%),radial-gradient(700px 500px at 0 100%,#e9f1e4,transparent 60%),#fbf4ee}
+.theme-cream .topbar{height:62px;background:rgba(255,250,245,.72);border:1px solid #ead8ca;border-radius:24px;padding:0 16px;box-shadow:0 8px 24px rgba(122,81,60,.05)}
+.theme-cream .logo{border-radius:16px;background:linear-gradient(135deg,#e4a3a3,#c9b8d8);box-shadow:0 8px 20px rgba(217,138,138,.25)}
+.theme-cream .panel{border-color:rgba(234,216,202,.9);box-shadow:0 14px 34px rgba(122,81,60,.07)}
+.theme-cream .panel::before{width:4px;background:#d98a8a;opacity:.7}
+.theme-cream .chat-row{min-height:44px;font-size:12.5px}
+.theme-cream .metric{background:rgba(255,250,245,.8);border-color:rgba(234,216,202,.9)}
+.theme-cream .metric::before{background:#d98a8a;height:4px;width:22px}
+.theme-cream .btn{border-radius:999px;background:rgba(255,250,245,.7)}
+.theme-cream .btn.primary{background:#d98a8a;border-color:#d98a8a;box-shadow:0 8px 20px rgba(217,138,138,.22)}
+.theme-cream .room-pill{border-radius:999px;background:rgba(255,250,245,.64)}
+.theme-cream .live-tag{background:#d98a8a;border-radius:999px}
+
+/* 09 Material */
+body.theme-material{--bg:#f7f3fb;--panel:#fffbfe;--panel-2:#f1e8f8;--border:#e8def8;--border-soft:#f3ebfa;--text:#1d1b20;--muted:#79747e;--accent:#6750a4;--accent-2:#9a82db;--accent-contrast:#fff;--gold:#7d5700;--hot-bg:#f7e9c8;--hot-text:#5b4300;--hot-bar:#c8a24a;--super-bg:#f9dbe4;--super-text:#6d2033;--super-bar:#c76b83;--blue:#4a6fa5;--purple:#6750a4;--radius:24px;--shadow:0 2px 8px rgba(103,80,164,.08);--mono:"Cascadia Code",Consolas,monospace;--number-font:"Segoe UI","Microsoft YaHei UI",sans-serif;--font:"Google Sans","Microsoft YaHei UI","Segoe UI",sans-serif;background:#f7f3fb}
+.theme-material .app{padding-top:18px}
+.theme-material .topbar{height:58px;background:#fffbfe;border:1px solid #e8def8;border-radius:20px;padding:0 16px}
+.theme-material .logo{border-radius:14px;background:#6750a4;box-shadow:none}
+.theme-material .panel{border-color:#e8def8;box-shadow:0 2px 8px rgba(103,80,164,.06)}
+.theme-material .panel::before{width:0}
+.theme-material .panel-head h2{color:#1d1b20}
+.theme-material .eyebrow{color:#6750a4}
+.theme-material .chat-head{background:#f1e8f8;border-color:#e8def8}
+.theme-material .chat-row{min-height:44px;font-size:12.5px}
+.theme-material .metric{background:#f1e8f8;border-color:transparent;box-shadow:none;border-radius:22px}
+.theme-material .metric::before{display:none}
+.theme-material .metric strong{color:#4f378b}
+.theme-material .btn{border-radius:999px;background:#f1e8f8;border-color:transparent}
+.theme-material .btn.primary{background:#6750a4;border-color:#6750a4}
+.theme-material .room-pill{background:#f1e8f8;border-color:transparent}
+.theme-material .live-tag{background:#6750a4;border-radius:999px}
+.theme-material .badge{background:#f1e8f8;border-color:transparent;color:#6750a4}
+
+/* 10 Terminal */
+body.theme-terminal{--bg:#080b08;--panel:#0d120d;--panel-2:#111811;--border:#1e2b1e;--border-soft:#162116;--text:#c9ffd8;--muted:#5e7a62;--accent:#7cffb2;--accent-2:#ffb86b;--accent-contrast:#061008;--gold:#ffcc66;--hot-bg:rgba(124,255,178,.07);--hot-text:#b8ffd0;--hot-bar:#7cffb2;--super-bg:rgba(255,184,107,.1);--super-text:#ffd7a8;--super-bar:#ffb86b;--blue:#7cffb2;--purple:#ffb86b;--radius:0;--shadow:none;--mono:"Cascadia Code","Consolas",monospace;--number-font:"Cascadia Code","Consolas",monospace;--font:"Microsoft YaHei UI","Segoe UI",sans-serif;background:#080b08}
+.theme-terminal .app::before{content:"";position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,rgba(124,255,178,.022) 0 1px,transparent 1px 4px);z-index:0}
+.theme-terminal .topbar{border-bottom:1px solid #1e2b1e;padding-bottom:8px;height:62px}
+.theme-terminal .logo{border-radius:0;background:#0f1a10;border:1px solid #2b4a2f;color:#7cffb2;box-shadow:none}
+.theme-terminal .brand h1{font-family:var(--mono);font-size:17px;letter-spacing:.5px;color:#d8ffe4}
+.theme-terminal .brand p{font-family:var(--mono);font-size:9px;color:#5e7a62;letter-spacing:.2px}
+.theme-terminal .room-pill{border-radius:0;background:#0d120d;border-color:#1e2b1e;font-family:var(--mono);font-size:11px}
+.theme-terminal .live-tag{border-radius:0;background:#7cffb2;color:#061008;font-family:var(--mono)}
+.theme-terminal .panel{border-color:#1e2b1e}
+.theme-terminal .panel::before{width:1px;background:#7cffb2;opacity:.5}
+.theme-terminal .panel-head h2{font-family:var(--mono);font-size:14px;letter-spacing:.5px}
+.theme-terminal .panel-head h2::before{content:"// ";color:#5e7a62}
+.theme-terminal .eyebrow{color:#ffb86b;letter-spacing:2px}
+.theme-terminal .chat-head{background:#0b100b;border-color:#1e2b1e;font-family:var(--mono);color:#5e7a62}
+.theme-terminal .chat-row{font-family:var(--mono);font-size:11.5px;min-height:42px;border-color:#162116}
+.theme-terminal .chat-row.super{border-left:3px solid #ffb86b}
+.theme-terminal .chat-row.hot{border-left:3px solid #7cffb2}
+.theme-terminal .metric{background:#0d120d;border-color:#1e2b1e;padding:10px 12px}
+.theme-terminal .metric::before{height:1px;width:100%;background:#1e2b1e;margin-bottom:7px}
+.theme-terminal .metric strong{font-size:23px;font-family:var(--mono);color:#d8ffe4}
+.theme-terminal .metric span{font-family:var(--mono);font-size:8px;letter-spacing:1px;color:#5e7a62}
+.theme-terminal .btn{border-radius:0;background:#0d120d;border-color:#1e2b1e;font-family:var(--mono);font-size:11px}
+.theme-terminal .btn.primary{background:#7cffb2;border-color:#7cffb2;color:#061008}
+.theme-terminal .chat-row .lv{color:#8fb899}
+.theme-terminal .chat-row .nick{color:#e9fff2;font-weight:700}
+.theme-terminal .chat-row .content{color:#f0fff6;font-weight:500}
+.theme-terminal .chat-row.hot .lv,.theme-terminal .chat-row.hot .nick,.theme-terminal .chat-row.hot .content{color:#e6fff0}
+.theme-terminal .chat-row.super .lv,.theme-terminal .chat-row.super .nick,.theme-terminal .chat-row.super .content{color:#ffe9c9}
+.theme-terminal .metric span{color:#8fb899}
+.theme-terminal .panel-note,.theme-terminal .panel-foot{color:#7e9a83}
+
+.theme-neon .chat-row .lv{color:#7fcfda}
+.theme-neon .chat-row.hot .lv,.theme-neon .chat-row.hot .nick,.theme-neon .chat-row.hot .content{color:#c9fbff}
+.theme-neon .chat-row.super .lv,.theme-neon .chat-row.super .nick,.theme-neon .chat-row.super .content{color:#ffd7e8}
+</style>
+</head>
+<body class="theme-primer layout-standard">
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">弹</div>
+      <div><h1>弹幕助手</h1><p>抖音直播 · 弹幕 / 礼物 / 数据</p></div>
+    </div>
+    <div class="room-pill">
+      <span class="live-tag">LIVE</span>
+      <span class="room-name">小缘喵喵</span>
+      <span class="room-id">943973166532</span>
+    </div>
+    <div class="top-actions">
+      <button class="btn ghost">导出网站</button>
+      <button class="btn primary"><span class="status-dot"></span>已连接</button>
+    </div>
+  </header>
+
+  <div class="dashboard">
+    <section class="panel chat">
+      <div class="panel-head">
+        <div><div class="eyebrow">LIVE CHAT</div><h2>弹幕 <span class="subtle">全部聊天</span></h2></div>
+        <div class="head-right">
+          <span class="legend"><i class="dot-hot"></i>35+/15+<i class="dot-super"></i>40+/18+</span>
+          <span class="badge">14</span>
+        </div>
+      </div>
+      <div class="chat-head"><span>消费</span><span>粉丝团</span><span>昵称</span><span>内容</span></div>
+      <div class="chat-list"><div class="chat-row super"><span class="lv">Lv.42</span><span class="lv">Lv.21</span><span class="nick">一只小耳朵</span><span class="content">这个皮肤也太好看了吧</span></div><div class="chat-row hot"><span class="lv">Lv.36</span><span class="lv">Lv.15</span><span class="nick">北岛</span><span class="content">刚刚那波操作太秀了</span></div><div class="chat-row"><span class="lv">Lv.18</span><span class="lv">Lv.10</span><span class="nick">奶茶不加糖</span><span class="content">主播今天状态好好</span></div><div class="chat-row"><span class="lv">Lv.9</span><span class="lv">Lv.6</span><span class="nick">晚风</span><span class="content">哈哈哈哈哈哈哈</span></div><div class="chat-row super"><span class="lv">Lv.51</span><span class="lv">Lv.24</span><span class="nick">超级大哥</span><span class="content">嘉年华安排上</span></div><div class="chat-row hot"><span class="lv">Lv.27</span><span class="lv">Lv.16</span><span class="nick">小鹿乱撞</span><span class="content">灯牌已点亮</span></div><div class="chat-row"><span class="lv">Lv.12</span><span class="lv">Lv.8</span><span class="nick">路过的观众</span><span class="content">刚进来，发生什么了</span></div><div class="chat-row"><span class="lv">Lv.33</span><span class="lv">Lv.14</span><span class="nick">星星点灯</span><span class="content">这局稳了</span></div><div class="chat-row super"><span class="lv">Lv.22</span><span class="lv">Lv.19</span><span class="nick">月亮邮差</span><span class="content">已关注，慢慢看</span></div><div class="chat-row"><span class="lv">Lv.16</span><span class="lv">Lv.9</span><span class="nick">橘子汽水</span><span class="content">今天 BGM 好好听</span></div><div class="chat-row"><span class="lv">Lv.31</span><span class="lv">Lv.12</span><span class="nick">小尾巴</span><span class="content">主播别下播啊</span></div><div class="chat-row super"><span class="lv">Lv.45</span><span class="lv">Lv.20</span><span class="nick">夜航船</span><span class="content">再打一局</span></div><div class="chat-row"><span class="lv">Lv.7</span><span class="lv">Lv.4</span><span class="nick">新来的</span><span class="content">关注了</span></div><div class="chat-row"><span class="lv">Lv.19</span><span class="lv">Lv.13</span><span class="nick">糖不甜</span><span class="content">这个操作学到了</span></div></div>
+      <div class="panel-foot"><span>双击弹幕可复制完整内容</span><span>仅显示实时消息</span></div>
+    </section>
+
+    <aside class="side">
+      <section class="panel entry-panel">
+        <div class="panel-head"><div><div class="eyebrow">WELCOME</div><h2>入场</h2></div><span class="badge">4</span></div>
+        <div class="panel-note">粉丝团灯牌 ≥ 15</div>
+        <div class="entry-row"><div class="entry-who"><span class="entry-lv">Lv.18</span><span class="entry-name">小鹿乱撞</span></div><span class="entry-time">19:42:08</span></div><div class="entry-row"><div class="entry-who"><span class="entry-lv">Lv.21</span><span class="entry-name">一只小耳朵</span></div><span class="entry-time">19:41:36</span></div><div class="entry-row"><div class="entry-who"><span class="entry-lv">Lv.16</span><span class="entry-name">星星点灯</span></div><span class="entry-time">19:40:52</span></div><div class="entry-row"><div class="entry-who"><span class="entry-lv">Lv.22</span><span class="entry-name">夜航船</span></div><span class="entry-time">19:39:44</span></div>
+      </section>
+      <section class="panel gift-panel">
+        <div class="panel-head"><div><div class="eyebrow">GIFT FEED</div><h2>礼物</h2></div><span class="badge">6</span></div>
+        <div class="panel-note">整组累计 &gt; 90 钻</div>
+        <div class="gift-row"><div class="gift-main"><span class="gift-id">ID 8473620195</span><span class="gift-name">嘉年华</span><span class="gift-count">×2</span></div><div class="gift-value">60,000<span>钻</span></div></div><div class="gift-row"><div class="gift-main"><span class="gift-id">ID 5382019476</span><span class="gift-name">跑车</span><span class="gift-count">×1</span></div><div class="gift-value">1,200<span>钻</span></div></div><div class="gift-row"><div class="gift-main"><span class="gift-id">ID 1839201746</span><span class="gift-name">粉丝团灯牌</span><span class="gift-count">×100</span></div><div class="gift-value">100<span>钻</span></div></div><div class="gift-row"><div class="gift-main"><span class="gift-id">ID 6201938475</span><span class="gift-name">小心心</span><span class="gift-count">×100</span></div><div class="gift-value">100<span>钻</span></div></div><div class="gift-row"><div class="gift-main"><span class="gift-id">ID 7744102938</span><span class="gift-name">抖音1号</span><span class="gift-count">×1</span></div><div class="gift-value">10,001<span>钻</span></div></div><div class="gift-row"><div class="gift-main"><span class="gift-id">ID 6612083745</span><span class="gift-name">直升机</span><span class="gift-count">×1</span></div><div class="gift-value">2,999<span>钻</span></div></div>
+        <div class="panel-foot"><span>礼物榜按 ID 汇总</span><span>含低价礼物</span></div>
+      </section>
+    </aside>
+
+    <div class="summary"><div class="metric metric-green"><span>当前在线</span><strong>12,846</strong><small>人</small></div><div class="metric metric-blue"><span>本场涨粉</span><strong>+326</strong><small>人</small></div><div class="metric metric-purple"><span>付费人数</span><strong>148</strong><small>人</small></div><div class="metric metric-gold"><span>礼物总额</span><strong>286,420</strong><small>钻</small></div><div class="metric metric-muted"><span>累计观看</span><strong>128.6万</strong><small></small></div></div>
+  </div>
+</div>
+</body>
+</html>

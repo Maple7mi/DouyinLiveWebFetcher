@@ -42,7 +42,7 @@ RED = "#ff5d73"
 BLUE = "#5aa9ff"
 FONT = "Microsoft YaHei UI"
 APP_NAME = "弹幕助手"
-GIFT_LIMIT = 5
+GIFT_LIMIT = 50
 
 
 class AuroraApp:
@@ -509,14 +509,14 @@ class AuroraApp:
         ).pack(side="left")
         tk.Label(
             gift_head,
-            text="礼物 · 最近 5 条",
+            text="礼物 · 高价值记录",
             bg=CARD,
             fg=FG,
             font=(FONT, 12, "bold"),
         ).pack(side="left", padx=(8, 0))
         tk.Label(
             gift_head,
-            text="仅显示整组累计 >90 钻 · 最高级高亮",
+            text="仅显示整组累计 >90 钻 · 滚轮回看",
             bg=CARD,
             fg=MUTED,
             font=(FONT, 8),
@@ -527,11 +527,66 @@ class AuroraApp:
         )
         self.gift_badge.pack(side="right", padx=(0, 10))
 
-        self.gift_list = tk.Frame(gift_strip, bg=CARD)
-        self.gift_list.pack(fill="x")
+        gift_body = tk.Frame(gift_strip, bg=CARD)
+        gift_body.pack(fill="x")
+        self.gift_canvas = tk.Canvas(
+            gift_body,
+            bg=CARD,
+            height=220,
+            highlightthickness=0,
+            borderwidth=0,
+            yscrollincrement=28,
+        )
+        self.gift_scroll = tk.Scrollbar(
+            gift_body,
+            orient="vertical",
+            command=self.gift_canvas.yview,
+            width=10,
+            bg="#241522",
+            troughcolor="#0c1018",
+            activebackground=MAGENTA,
+            relief="flat",
+            borderwidth=0,
+        )
+        self.gift_canvas.configure(yscrollcommand=self.gift_scroll.set)
+        self.gift_scroll.pack(side="right", fill="y")
+        self.gift_canvas.pack(side="left", fill="both", expand=True)
+        self.gift_list = tk.Frame(self.gift_canvas, bg=CARD)
+        self.gift_window = self.gift_canvas.create_window(
+            (0, 0), window=self.gift_list, anchor="nw"
+        )
+        self.gift_canvas.bind("<Configure>", self._sync_gift_canvas)
+        self.gift_list.bind("<Configure>", self._sync_gift_scroll)
+        self.gift_canvas.bind("<MouseWheel>", self._on_gift_wheel)
+        self.gift_list.bind("<MouseWheel>", self._on_gift_wheel)
         self.gift_placeholder = None
         self._show_gift_placeholder()
         tree_wrap.pack(fill="both", expand=True, padx=10, pady=(0, 0))
+
+    def _sync_gift_canvas(self, event=None):
+        try:
+            self.gift_canvas.itemconfigure(
+                self.gift_window, width=max(1, self.gift_canvas.winfo_width())
+            )
+        except Exception:
+            pass
+        self._sync_gift_scroll()
+
+    def _sync_gift_scroll(self, event=None):
+        try:
+            self.gift_canvas.configure(scrollregion=self.gift_canvas.bbox("all"))
+        except Exception:
+            pass
+
+    def _on_gift_wheel(self, event):
+        step = -3 if event.delta > 0 else 3
+        self.gift_canvas.yview_scroll(step, "units")
+        return "break"
+
+    def _bind_gift_wheel(self, widget):
+        widget.bind("<MouseWheel>", self._on_gift_wheel, add="+")
+        for child in widget.winfo_children():
+            self._bind_gift_wheel(child)
 
     def _show_gift_placeholder(self):
         if self.gift_placeholder is not None:
@@ -544,7 +599,8 @@ class AuroraApp:
             font=(FONT, 9),
             pady=12,
         )
-        self.gift_placeholder.pack()
+        self.gift_placeholder.pack(pady=18)
+        self._bind_gift_wheel(self.gift_placeholder)
 
     def _hide_gift_placeholder(self):
         if self.gift_placeholder is not None:
@@ -564,66 +620,87 @@ class AuroraApp:
         left = tk.Frame(row, bg=bg)
         left.pack(side="left", fill="x", expand=True, padx=9, pady=5)
 
-        level = tk.Label(
+        pay = tk.Label(
             left,
             text="",
             bg=bg,
             fg=GOLD,
-            font=(FONT, 10, "bold"),
-            width=6,
+            font=(FONT, 9, "bold"),
+            width=9,
             anchor="w",
         )
-        level.pack(side="left")
-        uid = tk.Label(
+        pay.pack(side="left")
+        fan = tk.Label(
             left,
             text="",
             bg=bg,
-            fg="#c9a6b8",
-            font=("Consolas", 9),
+            fg=CYAN,
+            font=(FONT, 9, "bold"),
+            width=8,
             anchor="w",
         )
-        uid.pack(side="left", padx=(4, 10))
-        pre = tk.Label(left, text="送出了", bg=bg, fg="#a68b9a", font=(FONT, 9))
-        pre.pack(side="left")
-        name = tk.Label(
+        fan.pack(side="left")
+        nick = tk.Label(
             left,
             text="",
             bg=bg,
             fg=FG,
-            font=(FONT, 12, "bold"),
+            font=(FONT, 10, "bold"),
             anchor="w",
         )
-        name.pack(side="left", padx=(7, 0))
-        tail = tk.Label(left, text="", bg=bg, fg="#ffb6d6", font=(FONT, 9))
-        tail.pack(side="left", padx=(7, 0))
-
-        value = tk.Label(
-            row,
+        nick.pack(side="left", padx=(0, 4))
+        pre = tk.Label(left, text="送出了", bg=bg, fg="#cbb3c2", font=(FONT, 11))
+        pre.pack(side="left")
+        gift = tk.Label(
+            left,
+            text="",
+            bg=bg,
+            fg="#ffd7e8",
+            font=(FONT, 13, "bold"),
+            anchor="w",
+        )
+        gift.pack(side="left", padx=(2, 0))
+        mult = tk.Label(
+            left,
             text="",
             bg=bg,
             fg=GOLD,
             font=(FONT, 13, "bold"),
-            anchor="e",
+            anchor="w",
+            padx=0,
         )
-        value.pack(side="right", padx=(8, 10))
+        mult.pack(side="left")
+
+        for label in (pay, fan, nick, pre, gift, mult):
+            label.configure(padx=0)
+        gift.pack_configure(padx=0)
+        mult.pack_configure(padx=0)
+
+        self._bind_gift_wheel(row)
         return {
             "key": key,
             "frame": row,
-            "level": level,
-            "uid": uid,
-            "name": name,
-            "tail": tail,
-            "value": value,
+            "pay": pay,
+            "fan": fan,
+            "nick": nick,
+            "gift": gift,
+            "mult": mult,
         }
 
     def _update_gift_row(self, info: dict, event: dict):
+        pay = int(event.get("pay_level") or 0)
         level = int(event.get("fans_club_level") or 0)
         count = int(event.get("gift_count") or 0)
-        info["level"].configure(text=f"Lv.{level}" if level else "Lv.-")
-        info["uid"].configure(text=f"ID {event.get('user_id', '')}")
-        info["name"].configure(text=event.get("gift_name", ""))
-        info["tail"].configure(text=f"×{count}，价值")
-        info["value"].configure(text=f"{fmt_int(event.get('diamonds', 0))} 钻")
+        info["pay"].configure(text=f"消费Lv.{pay}" if pay else "消费Lv.-")
+        info["fan"].configure(text=f"粉丝Lv.{level}" if level else "粉丝Lv.-")
+        nickname = str(event.get("nickname") or "未记录昵称")
+        if len(nickname) > 14:
+            nickname = nickname[:13] + "…"
+        info["nick"].configure(text=nickname)
+        info["gift"].configure(text=f"【{event.get('gift_name', '')}】")
+        info["mult"].configure(
+            text=f"x{count}，价值{fmt_int(event.get('diamonds', 0))}钻"
+        )
 
     def _add_gift_row(self, event: dict) -> dict:
         self._hide_gift_placeholder()
@@ -637,7 +714,10 @@ class AuroraApp:
             old_info = self.gift_rows.pop(old, None)
             if old_info:
                 old_info["frame"].destroy()
-        self.gift_badge.configure(text=str(len(self.gift_order)))
+        self.gift_badge.configure(text=str(min(self.gift_count + 1, GIFT_LIMIT)))
+        self.gift_canvas.update_idletasks()
+        self._sync_gift_scroll()
+        self.gift_canvas.yview_moveto(1.0)
         return info
 
     def _bump_gift(self, info: dict):
@@ -648,6 +728,9 @@ class AuroraApp:
         except ValueError:
             pass
         self.gift_order.append(info["key"])
+        self.gift_canvas.update_idletasks()
+        self._sync_gift_scroll()
+        self.gift_canvas.yview_moveto(1.0)
 
     # ------------------------------------------------------------------
     # 状态栏
@@ -891,6 +974,8 @@ class AuroraApp:
             info["frame"].destroy()
         self.gift_rows.clear()
         self.gift_order.clear()
+        self.gift_canvas.yview_moveto(0.0)
+        self._sync_gift_scroll()
         self._hide_gift_placeholder()
         self._show_gift_placeholder()
         self.chat_count = self.gift_count = 0
