@@ -13,18 +13,42 @@ import re
 from datetime import datetime
 from pathlib import Path
 
+import requests
+
 from liveMan import DouyinLiveWebFetcher
 from protobuf.douyin import ChatMessage
 
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0"
+)
+
 
 def parse_live_id(value: str) -> str:
-    """从直播间链接或纯房间号中取出 live_id。"""
+    """从直播间链接、分享短链或纯房间号中取出 live_id。"""
     value = value.strip()
     match = re.search(r"live\.douyin\.com/(\d+)", value)
     if match:
         return match.group(1)
     if value.isdigit():
         return value
+
+    # 抖音 App 的分享链接通常是 v.douyin.com 短链，跟随跳转后再取房间号
+    url_match = re.search(r"https?://[^\s]+", value)
+    if url_match and "v.douyin.com" in url_match.group(0):
+        try:
+            response = requests.get(
+                url_match.group(0),
+                headers={"User-Agent": USER_AGENT},
+                timeout=15,
+                allow_redirects=True,
+            )
+        except Exception as exc:
+            raise SystemExit(f"短链接解析失败：{exc}") from exc
+        match = re.search(r"live\.douyin\.com/(\d+)", f"{response.url}\n{response.text}")
+        if match:
+            return match.group(1)
+
     raise SystemExit(f"无法识别直播间链接或房间号：{value!r}")
 
 
@@ -95,6 +119,10 @@ class CsvCollector(DouyinLiveWebFetcher):
             ]
         )
         self._csv_file.flush()
+
+    def _parseRankMsg(self, payload):
+        # 原始实现会把整个榜单对象打印出来，刷屏且没有用处
+        print("【排行榜】收到排行榜数据（已省略）", flush=True)
 
 
 def main():
