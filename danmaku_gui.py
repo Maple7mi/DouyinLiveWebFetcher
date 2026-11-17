@@ -3,7 +3,7 @@
 """抖音直播弹幕姬（Tkinter 桌面窗口）。
 
 四个分区：
-1. 弹幕：全部聊天，含发送人 ID、粉丝团灯牌等级；
+1. 弹幕：全部聊天，含消费等级、粉丝团灯牌等级、昵称、内容；
 2. 入场：只看粉丝团灯牌 > 15 级的进场；
 3. 礼物：只显示单条总价值 > 90 钻（9 元）的礼物；
 4. 直播总结：当前在线、本场涨粉、付费人数、礼物总额、累计观看。
@@ -89,6 +89,8 @@ class DanmakuClient(DouyinLiveWebFetcher):
         self._stop = threading.Event()
         self._seen: set[tuple[str, str]] = set()
         self._gift_repeat: dict[int, int] = {}
+        self._gift_group_total: dict[int, int] = {}
+        self._gift_group_emitted: dict[int, int] = {}
         self._followers: int | None = None
         self._follow_base: int | None = None
         self._online = 0
@@ -146,6 +148,7 @@ class DanmakuClient(DouyinLiveWebFetcher):
                 "user_id",
                 "nickname",
                 "fans_club_level",
+                "pay_level",
                 "content",
                 "gift_name",
                 "gift_count",
@@ -195,6 +198,7 @@ class DanmakuClient(DouyinLiveWebFetcher):
                     data.get("user_id", ""),
                     data.get("nickname", ""),
                     data.get("fans_club_level", ""),
+                    data.get("pay_level", ""),
                     data.get("content", ""),
                     data.get("gift_name", ""),
                     data.get("gift_count", ""),
@@ -298,6 +302,7 @@ class DanmakuClient(DouyinLiveWebFetcher):
             return
         club = user.fans_club.data if user.fans_club else None
         level = int(club.level or 0) if club else 0
+        pay_level = int(user.pay_grade.level or 0) if user.pay_grade else 0
         content = (message.content or "").replace("\n", " ").strip()
         if not content:
             return
@@ -307,6 +312,7 @@ class DanmakuClient(DouyinLiveWebFetcher):
             user_id=str(user.id),
             nickname=user.nick_name,
             fans_club_level=level,
+            pay_level=pay_level,
             content=content,
         )
         self._emit("chat", **data)
@@ -323,12 +329,14 @@ class DanmakuClient(DouyinLiveWebFetcher):
             return
         club = user.fans_club.data if user.fans_club else None
         level = int(club.level or 0) if club else 0
+        pay_level = int(user.pay_grade.level or 0) if user.pay_grade else 0
         content = (message.default_content or "[表情]").replace("\n", " ").strip()
         data = dict(
             msg_id=msg_id,
             user_id=str(user.id),
             nickname=user.nick_name,
             fans_club_level=level,
+            pay_level=pay_level,
             content=content,
         )
         self._msg_count += 1
@@ -343,6 +351,7 @@ class DanmakuClient(DouyinLiveWebFetcher):
             return
         club = user.fans_club.data if user.fans_club else None
         level = int(club.level or 0) if club else 0
+        pay_level = int(user.pay_grade.level or 0) if user.pay_grade else 0
         # 第二个分区只关心 >15 级粉丝团灯牌
         if level <= 15:
             return
@@ -354,6 +363,7 @@ class DanmakuClient(DouyinLiveWebFetcher):
             user_id=str(user.id),
             nickname=user.nick_name,
             fans_club_level=level,
+            pay_level=pay_level,
             content="进入直播间",
         )
         self._emit("entry", **data)
@@ -429,32 +439,49 @@ class DanmakuClient(DouyinLiveWebFetcher):
         if not self._once("gift", msg_id):
             return
         count = self._gift_delta(message)
-        if count <= 0:
+        group_total = (
+            self._gift_group_total.get(group, 0) + count if group else count
+        )
+        if group:
+            self._gift_group_total[group] = group_total
+        if count <= 0 and group_total <= 0:
             return
 
         club = user.fans_club.data if user.fans_club else None
         level = int(club.level or 0) if club else 0
+        pay_level = int(user.pay_grade.level or 0) if user.pay_grade else 0
         diamonds = unit * count
+        total_diamonds = unit * group_total
         uid = str(user.id)
-        self._payers.add(uid)
-        if level > 0:
-            self._fan_payers.add(uid)
+        if count > 0:
+            self._payers.add(uid)
+            if level > 0:
+                self._fan_payers.add(uid)
         self._gift_diamonds += diamonds
         self._msg_count += 1
 
-        if diamonds > 90:
+        # 连击的 repeat_count 是累计值：界面按整组累计总价判断，
+        # 例如 100 个 1 钻小心心，不应被拆成 10 个 10 钻而过滤掉。
+        already = self._gift_group_emitted.get(group, -1) if group else -1
+        if total_diamonds > 90 and group_total != already:
+            self._gift_group_emitted[group] = group_total if group else total_diamonds
             data = dict(
                 msg_id=msg_id,
                 user_id=uid,
                 nickname=user.nick_name,
                 fans_club_level=level,
+                pay_level=pay_level,
                 content=gift.name,
                 gift_name=gift.name,
-                gift_count=count,
-                diamonds=diamonds,
+                gift_count=group_total,
+                diamonds=total_diamonds,
+                group_key=str(group) if group else msg_id,
             )
             self._emit("gift", **data)
             self._write_csv("gift", **data)
+        if message.repeat_end and group:
+            self._gift_group_total.pop(group, None)
+            self._gift_group_emitted.pop(group, None)
         self._emit_summary()
 
     def _parseSocialMsg(self, payload):
@@ -512,6 +539,7 @@ class DanmakuApp:
         self.chat_count = 0
         self.entry_count = 0
         self.gift_count = 0
+        self.gift_rows: dict[str, str] = {}
 
         self._setup_style()
         self._build_topbar()
@@ -800,17 +828,16 @@ class DanmakuApp:
         body.grid_rowconfigure(1, weight=2)
 
         self.chat_card, chat_body, self.chat_badge = self._make_card(
-            body, "弹幕", "全部聊天 · 含 ID 与粉丝团等级"
+            body, "弹幕", "全部聊天 · 消费等级 / 粉丝团 / 昵称"
         )
         self.chat_card.grid(row=0, column=0, rowspan=2, sticky="nsew", padx=(0, 10))
         self.chat_tree = self._make_tree(
             chat_body,
             [
-                ("time", "时间", 58, "center", False),
-                ("level", "灯牌", 48, "center", False),
-                ("nick", "昵称", 110, "w", False),
-                ("uid", "发送人 ID", 140, "w", False),
-                ("content", "内容", 300, "w", True),
+                ("pay", "消费等级", 82, "center", False),
+                ("level", "粉丝团", 76, "center", False),
+                ("nick", "昵称", 150, "w", False),
+                ("content", "弹幕内容", 520, "w", True),
             ],
         )
         self.chat_tree.tag_configure("odd", background=CARD)
@@ -825,17 +852,16 @@ class DanmakuApp:
         self.entry_tree = self._make_tree(
             entry_body,
             [
-                ("time", "时间", 58, "center", False),
-                ("level", "灯牌", 48, "center", False),
-                ("nick", "昵称", 120, "w", True),
-                ("uid", "发送人 ID", 140, "w", False),
+                ("time", "时间", 70, "center", False),
+                ("level", "粉丝团", 76, "center", False),
+                ("nick", "昵称", 220, "w", True),
             ],
         )
         self.entry_tree.tag_configure("odd", background=CARD)
         self.entry_tree.tag_configure("even", background=CARD_ALT)
 
         self.gift_card, gift_body, self.gift_badge = self._make_card(
-            body, "礼物", "仅显示单条 >90 钻；总额/付费人数统计全部礼物"
+            body, "礼物", "整组累计 >90 钻；总额/付费人数统计全部礼物"
         )
         self.gift_card.grid(row=1, column=1, sticky="nsew")
         self.gift_tree = self._make_tree(
@@ -1037,6 +1063,7 @@ class DanmakuApp:
             for item in tree.get_children():
                 tree.delete(item)
         self.chat_count = self.entry_count = self.gift_count = 0
+        self.gift_rows.clear()
         self.chat_badge.configure(text="0")
         self.entry_badge.configure(text="0")
         self.gift_badge.configure(text="0")
@@ -1064,16 +1091,16 @@ class DanmakuApp:
         kind = event.get("kind")
         if kind == "chat":
             level = int(event.get("fans_club_level") or 0)
+            pay_level = int(event.get("pay_level") or 0)
             tags = ("odd" if self.chat_count % 2 else "even",)
             if level >= 15:
                 tags = tags + ("vip",)
             self._insert(
                 self.chat_tree,
                 (
-                    event.get("ts", ""),
-                    level or "-",
+                    f"Lv.{pay_level}" if pay_level else "-",
+                    f"Lv.{level}" if level else "-",
                     event.get("nickname", ""),
-                    event.get("user_id", ""),
                     event.get("content", ""),
                 ),
                 tags,
@@ -1082,13 +1109,13 @@ class DanmakuApp:
             self.chat_count += 1
             self.chat_badge.configure(text=fmt_int(self.chat_count))
         elif kind == "entry":
+            level = int(event.get("fans_club_level") or 0)
             self._insert(
                 self.entry_tree,
                 (
                     event.get("ts", ""),
-                    event.get("fans_club_level", ""),
+                    f"Lv.{level}" if level else "-",
                     event.get("nickname", ""),
-                    event.get("user_id", ""),
                 ),
                 ("odd" if self.entry_count % 2 else "even",),
                 300,
@@ -1096,21 +1123,30 @@ class DanmakuApp:
             self.entry_count += 1
             self.entry_badge.configure(text=fmt_int(self.entry_count))
         elif kind == "gift":
-            self._insert(
-                self.gift_tree,
-                (
-                    event.get("ts", ""),
-                    event.get("fans_club_level", ""),
-                    event.get("nickname", ""),
-                    event.get("gift_name", ""),
-                    f"x{event.get('gift_count', 1)}",
-                    fmt_int(event.get("diamonds", 0)),
-                ),
-                ("odd" if self.gift_count % 2 else "even",),
-                300,
+            key = str(event.get("group_key") or event.get("msg_id") or "")
+            values = (
+                event.get("ts", ""),
+                event.get("fans_club_level", ""),
+                event.get("nickname", ""),
+                event.get("gift_name", ""),
+                f"x{event.get('gift_count', 1)}",
+                fmt_int(event.get("diamonds", 0)),
             )
-            self.gift_count += 1
-            self.gift_badge.configure(text=fmt_int(self.gift_count))
+            existing = self.gift_rows.get(key)
+            if existing and self.gift_tree.exists(existing):
+                self.gift_tree.item(existing, values=values)
+                self.gift_tree.move(existing, "", "end")
+            else:
+                iid = self._insert(
+                    self.gift_tree,
+                    values,
+                    ("odd" if self.gift_count % 2 else "even",),
+                    300,
+                )
+                if key:
+                    self.gift_rows[key] = iid
+                self.gift_count += 1
+                self.gift_badge.configure(text=fmt_int(self.gift_count))
         elif kind == "summary":
             online = event.get("online")
             if online:
@@ -1162,17 +1198,17 @@ class DanmakuApp:
         if not item:
             return
         values = self.chat_tree.item(item, "values")
-        if len(values) < 5:
+        if len(values) < 4:
             return
         try:
             self.root.clipboard_clear()
-            self.root.clipboard_append(str(values[4]))
+            self.root.clipboard_append(str(values[3]))
             self.hint_var.set("已复制完整弹幕内容")
         except Exception:
             pass
 
     def _insert(self, tree, values, tags, limit):
-        tree.insert("", "end", values=values, tags=tags)
+        iid = tree.insert("", "end", values=values, tags=tags)
         children = tree.get_children()
         if len(children) > limit:
             for item in children[: len(children) - limit]:
@@ -1180,6 +1216,7 @@ class DanmakuApp:
         children = tree.get_children()
         if children:
             tree.see(children[-1])
+        return iid
 
     def _set_status(self, text, color):
         self.status_var.set(text)
