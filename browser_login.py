@@ -52,6 +52,18 @@ def _get_json(url: str, timeout: float = 1.0):
         return json.loads(resp.read().decode("utf-8", "ignore"))
 
 
+def _wait_for_browser(port: int, timeout: float = 20.0) -> dict:
+    deadline = time.time() + timeout
+    last_error: Exception | None = None
+    while time.time() < deadline:
+        try:
+            return _get_json(f"http://127.0.0.1:{port}/json/version")
+        except Exception as exc:
+            last_error = exc
+        time.sleep(0.3)
+    raise BrowserLoginError(f"登录窗口没有启动成功：{last_error or '无法连接 Edge 调试端口'}")
+
+
 def _wait_for_target(port: int, timeout: float = 20.0) -> dict:
     deadline = time.time() + timeout
     last_error: Exception | None = None
@@ -66,6 +78,14 @@ def _wait_for_target(port: int, timeout: float = 20.0) -> dict:
             last_error = exc
         time.sleep(0.4)
     raise BrowserLoginError(f"登录窗口没有启动成功：{last_error or '无法连接 Edge 调试端口'}")
+
+
+def _browser_ws_url(port: int) -> str:
+    info = _wait_for_browser(port)
+    ws = info.get("webSocketDebuggerUrl") or ""
+    if not ws:
+        raise BrowserLoginError("Edge 没有提供浏览器级调试地址。")
+    return ws
 
 
 class _Cdp:
@@ -121,6 +141,17 @@ def _cookie_header(cookies: list[dict]) -> str:
     return "; ".join(f"{name}={value}" for name, value in wanted.items())
 
 
+def _read_cookies(cdp: "_Cdp") -> list[dict]:
+    errors: list[str] = []
+    for method in ("Storage.getCookies", "Network.getAllCookies"):
+        try:
+            result = cdp.call(method, timeout=8)
+            return result.get("cookies") or []
+        except BrowserLoginError as exc:
+            errors.append(f"{method}: {exc}")
+    raise BrowserLoginError("读取登录 Cookie 失败：" + "；".join(errors))
+
+
 def login_and_get_cookie(
     profile_dir: str | Path,
     *,
@@ -158,28 +189,40 @@ def login_and_get_cookie(
     cdp = None
     try:
         if status_cb:
-            status_cb("登录窗口已打开，请扫码或登录抖音…")
-        target = _wait_for_target(port)
-        cdp = _Cdp(target["webSocketDebuggerUrl"])
-        cdp.call("Network.enable")
+            status_cb("登录窗口已打开，请扫码或登录抖音…登录成功后先不要关闭 Edge，等程序提示成功")
+        # 先确保页面已经起来，再连浏览器级 CDP；页面跳转不会影响浏览器级连接。
+        _wait_for_target(port)
+        try:
+            cdp = _Cdp(_browser_ws_url(port))
+        except Exception:
+            target = _wait_for_target(port)
+            cdp = _Cdp(target["webSocketDebuggerUrl"])
         deadline = time.time() + timeout
         last_report = 0.0
         while time.time() < deadline:
             if cancel_event is not None and cancel_event.is_set():
                 raise BrowserLoginCancelled("已取消登录")
-            if proc.poll() is not None:
-                raise BrowserLoginError("登录窗口被关闭了，请重新点击登录。")
-            result = cdp.call("Network.getAllCookies", timeout=8)
-            header = _cookie_header(result.get("cookies") or [])
+            cookies = _read_cookies(cdp)
+            header = _cookie_header(cookies)
             if header:
                 if status_cb:
                     status_cb("已检测到登录，正在读取 Cookie…")
                 return header
+            if proc.poll() is not None:
+                # Edge 可能把窗口交给后台进程；再读一次，仍失败才报错。
+                cookies = _read_cookies(cdp)
+                header = _cookie_header(cookies)
+                if header:
+                    return header
+                raise BrowserLoginError(
+                    "登录窗口已关闭，未读到登录 Cookie。请重新点击登录，"
+                    "登录成功后先不要关闭 Edge，等程序提示成功。"
+                )
             now = time.time()
             if status_cb and now - last_report > 5:
                 last_report = now
-                status_cb("等待登录中…请在窗口里扫码，登录成功后会自动读取")
-            time.sleep(1.0)
+                status_cb("等待登录中…请在 Edge 窗口里扫码，登录成功后不要关闭窗口")
+            time.sleep(0.6)
         raise BrowserLoginError("登录超时，请重新点击登录。")
     finally:
         if cdp is not None:

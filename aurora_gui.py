@@ -978,9 +978,19 @@ class AuroraApp:
         else:
             self.login_btn.configure(text="登录抖音")
             self._refresh_cookie_status()
-            if not self.cookie_var.get().strip():
+            detail = (event.get("text") or "").strip()
+            if detail:
+                self.cookie_hint_var.set(detail)
+                try:
+                    log_dir = app_dir() / "logs"
+                    log_dir.mkdir(exist_ok=True)
+                    with (log_dir / "login.log").open("a", encoding="utf-8") as fh:
+                        fh.write(time.strftime("%Y-%m-%d %H:%M:%S ") + detail + "\n")
+                except Exception:
+                    pass
+            elif not self.cookie_var.get().strip():
                 self.cookie_hint_var.set("未登录抖音：登录失败，请重试")
-                self.cookie_status_label.configure(fg=RED)
+            self.cookie_status_label.configure(fg=RED)
             self._set_status("登录失败", RED)
 
     def _clear_login(self):
