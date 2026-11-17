@@ -119,6 +119,7 @@ class AuroraApp:
         self.root.after(60, self._dark_titlebar)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.after(100, self.drain_events)
+        self.root.after(400, self._announce_cookie_state)
         self.root.after(120_000, self._auto_export_loop)
 
     def _dark_titlebar(self):
@@ -456,11 +457,12 @@ class AuroraApp:
         row = tk.Frame(bar, bg=CARD)
         row.pack(fill="x", padx=10, pady=6)
         self.cookie_var = tk.StringVar()
-        self.cookie_hint_var = tk.StringVar(value="未登录抖音：只能收弹幕")
-        tk.Label(
-            row, textvariable=self.cookie_hint_var, bg=CARD, fg="#8b96a8",
-            font=(FONT, 10),
-        ).pack(side="left")
+        self.cookie_hint_var = tk.StringVar(value="未登录抖音：礼物消息不会推送")
+        self.cookie_status_label = tk.Label(
+            row, textvariable=self.cookie_hint_var, bg=CARD, fg="#ff7b8a",
+            font=(FONT, 10, "bold"),
+        )
+        self.cookie_status_label.pack(side="left")
         self.hint_var = tk.StringVar(value="等待连接")
         tk.Label(
             row, textvariable=self.hint_var, bg=CARD, fg="#657187", font=(FONT, 9)
@@ -762,13 +764,149 @@ class AuroraApp:
         if cookie.lower().startswith("cookie:"):
             cookie = cookie[7:].strip()
         self.cookie_var.set(cookie)
-        self.cookie_hint_var.set(
-            "已登录抖音：礼物消息可用" if cookie else "未登录抖音：只能收弹幕"
+        self._refresh_cookie_status()
+
+    def _cookie_age_days(self) -> float | None:
+        path = app_dir() / "cookie.txt"
+        try:
+            return max(0.0, (time.time() - path.stat().st_mtime) / 86400.0)
+        except Exception:
+            return None
+
+    def _refresh_cookie_status(self):
+        cookie = self.cookie_var.get().strip()
+        path = app_dir() / "cookie.txt"
+        if not cookie or not path.exists():
+            text = "未登录抖音：礼物消息不会推送"
+            color = RED
+        else:
+            age = self._cookie_age_days()
+            if age is not None and age >= 7:
+                text = f"登录 Cookie 已保存 {int(age)} 天，可能已过期"
+                color = GOLD
+            else:
+                text = "已登录抖音 · Cookie 已加载"
+                color = GREEN
+        if hasattr(self, "cookie_hint_var"):
+            self.cookie_hint_var.set(text)
+        if hasattr(self, "cookie_status_label"):
+            self.cookie_status_label.configure(fg=color)
+
+    def _announce_cookie_state(self):
+        cookie = self.cookie_var.get().strip()
+        path = app_dir() / "cookie.txt"
+        age = self._cookie_age_days()
+        if not cookie or not path.exists():
+            self._show_cookie_notice(
+                "当前未登录抖音。\n\n"
+                "礼物消息不会推送，礼物区、礼物总额和付费人数都会是空的；"
+                "弹幕、入场和在线人数仍然正常。\n\n"
+                "请点右侧「登录抖音」扫码，登录成功后再点「连接」。",
+                "去登录",
+            )
+        elif age is not None and age >= 7:
+            self._show_cookie_notice(
+                f"检测到本机 Cookie 已保存约 {int(age)} 天，可能已经失效。\n\n"
+                "如果礼物区一直为空，请重新登录抖音。",
+                "重新登录",
+            )
+        else:
+            days = 0 if age is None else int(age)
+            self._toast(
+                f"已加载登录 Cookie（{days} 天前保存）· 礼物消息应可用"
+            )
+
+    def _show_cookie_notice(self, message: str, action_text: str):
+        win = tk.Toplevel(self.root)
+        win.title("抖音登录状态")
+        win.configure(bg=CARD)
+        win.resizable(False, False)
+        win.transient(self.root)
+        win.grab_set()
+        width, height = 560, 310
+        self.root.update_idletasks()
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - width) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - height) // 2
+        win.geometry(f"{width}x{height}+{x}+{y}")
+
+        head = tk.Frame(win, bg=CARD)
+        head.pack(fill="x", padx=22, pady=(18, 6))
+        tk.Label(head, text="●", bg=CARD, fg=RED, font=(FONT, 13)).pack(side="left")
+        tk.Label(
+            head, text="抖音登录状态", bg=CARD, fg=FG, font=(FONT, 15, "bold")
+        ).pack(side="left", padx=(8, 0))
+
+        tk.Label(
+            win,
+            text=message,
+            bg=CARD,
+            fg="#dbe3f1",
+            font=(FONT, 10),
+            justify="left",
+            anchor="w",
+            wraplength=500,
+        ).pack(fill="both", expand=True, padx=24, pady=(4, 8))
+
+        buttons = tk.Frame(win, bg=CARD)
+        buttons.pack(fill="x", padx=22, pady=(0, 18))
+        primary = tk.Button(
+            buttons,
+            text=action_text,
+            bg=ACCENT,
+            fg="#ffffff",
+            activebackground=ACCENT_DIM,
+            activeforeground="#ffffff",
+            relief="flat",
+            bd=0,
+            font=(FONT, 11, "bold"),
+            padx=18,
+            pady=8,
+            cursor="hand2",
         )
+        primary.pack(side="right")
+        secondary = tk.Button(
+            buttons,
+            text="先只看弹幕",
+            bg="#1a2030",
+            fg="#b8c3d6",
+            activebackground="#242c3f",
+            activeforeground=FG,
+            relief="flat",
+            bd=0,
+            font=(FONT, 10),
+            padx=14,
+            pady=8,
+            cursor="hand2",
+            command=win.destroy,
+        )
+        secondary.pack(side="right", padx=(0, 8))
+
+        def go_login():
+            win.destroy()
+            self._login_douyin()
+
+        primary.configure(command=go_login)
+        win.protocol("WM_DELETE_WINDOW", win.destroy)
+        win.lift()
+        win.focus_force()
+
+    def _toast(self, text: str, color: str = GREEN):
+        label = tk.Label(
+            self.root,
+            text=text,
+            bg="#14251f",
+            fg=color,
+            font=(FONT, 11, "bold"),
+            padx=18,
+            pady=8,
+            bd=0,
+        )
+        label.place(relx=0.5, y=14, anchor="n")
+        self.root.after(5000, label.destroy)
 
     def _clear_cookie(self):
         self.cookie_var.set("")
-        self.cookie_hint_var.set("未登录抖音：只能收弹幕")
+        self._refresh_cookie_status()
 
     def _save_cookie_file(self):
         cookie = self.cookie_var.get().strip()
@@ -788,7 +926,8 @@ class AuroraApp:
         self.login_btn.configure(state="disabled", text="登录中…")
         self.clear_login_btn.configure(state="disabled")
         self.connect_btn.configure(state="disabled")
-        self.cookie_hint_var.set("正在打开登录窗口…")
+        self.cookie_hint_var.set("正在打开 Edge 登录窗口…")
+        self.cookie_status_label.configure(fg=GOLD)
         self.hint_var.set("请在弹出的 Edge 窗口扫码登录")
         self.login_thread = threading.Thread(target=self._login_worker, daemon=True)
         self.login_thread.start()
@@ -816,6 +955,7 @@ class AuroraApp:
         kind = event.get("kind")
         if kind == "login_status":
             self.cookie_hint_var.set(event.get("text") or "")
+            self.cookie_status_label.configure(fg=GOLD)
             return
         self.login_btn.configure(state="normal")
         self.clear_login_btn.configure(state="normal")
@@ -827,16 +967,20 @@ class AuroraApp:
             except Exception as exc:
                 messagebox.showerror("登录", f"Cookie 写入失败：{exc}")
                 self.login_btn.configure(text="登录抖音")
-                self.cookie_hint_var.set("登录成功，但 Cookie 保存失败")
+                self._refresh_cookie_status()
                 return
             self.cookie_var.set(cookie)
             self.login_btn.configure(text="重新登录")
-            self.cookie_hint_var.set("已登录抖音：礼物消息可用")
+            self._refresh_cookie_status()
             self.hint_var.set("登录成功，可以连接直播间")
             self._set_status("登录成功", GREEN)
+            self._toast("登录成功 · Cookie 已保存，礼物消息应可用")
         else:
             self.login_btn.configure(text="登录抖音")
-            self.cookie_hint_var.set(event.get("text") or "登录失败，请重试")
+            self._refresh_cookie_status()
+            if not self.cookie_var.get().strip():
+                self.cookie_hint_var.set("未登录抖音：登录失败，请重试")
+                self.cookie_status_label.configure(fg=RED)
             self._set_status("登录失败", RED)
 
     def _clear_login(self):
@@ -1260,10 +1404,7 @@ class AuroraApp:
         )
         self.disconnect_btn.configure(state="normal", fg=FG)
         self.hint_var.set(f"直播间 {live_id} · 连接中…")
-        if cookie:
-            self.cookie_hint_var.set("已登录抖音：尝试接收礼物消息")
-        else:
-            self.cookie_hint_var.set("未登录抖音：只能收弹幕")
+        self._refresh_cookie_status()
         self.csv_var.set("")
         self._set_status("连接中…", GOLD)
 
