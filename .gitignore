@@ -9,3 +9,5 @@ package-lock.json
 *.pyc
 logs/
 tmp_test*
+cookie.txt
+tmp_*

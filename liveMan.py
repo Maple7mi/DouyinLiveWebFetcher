@@ -106,13 +106,16 @@ def generateMsToken(length=182):
 
 class DouyinLiveWebFetcher:
     
-    def __init__(self, live_id, abogus_file='a_bogus.js'):
+    def __init__(self, live_id, abogus_file='a_bogus.js', cookie=''):
         """
         直播间弹幕抓取对象
         :param live_id: 直播间的直播id，打开直播间web首页的链接如：https://live.douyin.com/261378947940，
                         其中的261378947940即是live_id
+        :param cookie: 可选，已登录抖音网页版的 Cookie。抖音目前只向登录账号推送礼物消息，
+                       游客身份只能收到弹幕/进场等消息。
         """
         self.abogus_file = abogus_file
+        self.cookie = (cookie or '').strip().rstrip(';')
         self.__ttwid = None
         self.__room_id = None
         self.session = requests.Session()
@@ -150,6 +153,18 @@ class DouyinLiveWebFetcher:
             self.__ttwid = response.cookies.get('ttwid')
             return self.__ttwid
     
+    def _cookie_header(self):
+        """把用户提供的登录 Cookie 与自动获取的 ttwid 合并。"""
+        if self.cookie and 'ttwid=' in self.cookie:
+            return self.cookie
+        parts = []
+        if self.cookie:
+            parts.append(self.cookie)
+        ttwid = self.ttwid
+        if ttwid:
+            parts.append(f'ttwid={ttwid}')
+        return '; '.join(parts)
+
     @property
     def room_id(self):
         """
@@ -161,7 +176,7 @@ class DouyinLiveWebFetcher:
         url = self.live_url + self.live_id
         headers = {
             "User-Agent": self.user_agent,
-            "cookie": f"ttwid={self.ttwid}&msToken={generateMsToken()}; __ac_nonce=0123407cc00a9e438deb4",
+            "cookie": f"{self._cookie_header()}; msToken={generateMsToken()}; __ac_nonce=0123407cc00a9e438deb4",
         }
         try:
             response = self.session.get(url, headers=headers)
@@ -259,7 +274,7 @@ class DouyinLiveWebFetcher:
         wss += f"&signature={signature}"
         
         headers = {
-            "cookie": f"ttwid={self.ttwid}",
+            "cookie": self._cookie_header(),
             'user-agent': self.user_agent,
         }
         self.ws = websocket.WebSocketApp(wss,
