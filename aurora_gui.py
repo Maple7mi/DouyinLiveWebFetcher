@@ -64,6 +64,8 @@ class AuroraApp:
         self.gift_order: list[str] = []
         self._last_auto_export_events = -1
         self._auto_export_job = None
+        self.site_server = None
+        self._site_server_dir: Path | None = None
 
         self._setup_style()
         self._build_topbar()
@@ -816,7 +818,18 @@ class AuroraApp:
             pass
         if self.client is not None:
             self.client.stop()
+        self._stop_site_server()
         self.root.destroy()
+
+    def _stop_site_server(self):
+        server = self.site_server
+        self.site_server = None
+        self._site_server_dir = None
+        if server is not None:
+            try:
+                server.stop()
+            except Exception:
+                pass
 
     def _auto_export_loop(self):
         """定期把当天日志刷进静态站点；跨天时会自动生成新的日期页。"""
@@ -859,10 +872,43 @@ class AuroraApp:
             site_builder.build_site(
                 data, out, title=title, meta=meta, live_id=live_id
             )
+
+            def on_delete(day: str) -> bool:
+                if not live_id:
+                    return False
+                site_builder.mark_day_deleted(logs, live_id, day)
+                remaining = site_builder.load_messages_from_logs(
+                    logs, live_id=live_id
+                )
+                site_builder.build_site(
+                    remaining,
+                    out,
+                    title=title,
+                    meta=meta,
+                    live_id=live_id,
+                )
+                self._last_auto_export_events = -1
+                return True
+
             if open_browser:
                 import webbrowser
 
-                webbrowser.open((out / "index.html").as_uri())
+                if self.site_server is None or self._site_server_dir != out:
+                    self._stop_site_server()
+                    try:
+                        from site_server import start_site_server
+
+                        self.site_server = start_site_server(out, on_delete)
+                        self._site_server_dir = out
+                    except Exception:
+                        self.site_server = None
+                        self._site_server_dir = None
+                if self.site_server is not None:
+                    webbrowser.open(
+                        f"http://127.0.0.1:{self.site_server.port}/index.html"
+                    )
+                else:
+                    webbrowser.open((out / "index.html").as_uri())
             if not quiet:
                 messagebox.showinfo("导出网站", f"已导出 {len(data)} 条消息到：\n{out}")
             return True

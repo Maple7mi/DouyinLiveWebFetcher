@@ -192,6 +192,31 @@ def _room_meta_html(meta: dict[str, Any], live_id: str | None) -> str:
     return " · ".join(parts)
 
 
+def _deleted_days_file(log_dir: str | Path, live_id: str | None) -> Path:
+    return Path(log_dir) / f"deleted_days_{live_id or 'all'}.json"
+
+
+def load_deleted_days(log_dir: str | Path, live_id: str | None) -> set[str]:
+    path = _deleted_days_file(log_dir, live_id)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return set()
+    if not isinstance(data, list):
+        return set()
+    return {str(day) for day in data if len(str(day)) == 10}
+
+
+def mark_day_deleted(log_dir: str | Path, live_id: str | None, day: str) -> None:
+    days = load_deleted_days(log_dir, live_id)
+    days.add(day)
+    path = _deleted_days_file(log_dir, live_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(sorted(days), ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
 def load_messages_from_logs(
     log_dir: str | Path, live_id: str | None = None
 ) -> list[dict[str, Any]]:
@@ -250,6 +275,9 @@ def load_messages_from_logs(
             gift_best[key] = row
 
     rows = list(chat_best.values()) + list(gift_best.values())
+    deleted_days = load_deleted_days(log_dir, live_id)
+    if deleted_days:
+        rows = [r for r in rows if r["received_at"][:10] not in deleted_days]
     rows.sort(key=lambda r: (r["received_at"], r["msg_id"]))
     return rows
 
@@ -607,6 +635,8 @@ h1 { margin: 10px 0 12px; font-size: clamp(34px, 5vw, 56px); line-height: 1.12; 
   padding: 7px 11px; font: inherit; font-size: 12px; font-weight: 650;
 }
 .btn:hover { background: rgba(245,196,81,.16); }
+.btn.danger { color: #ff8fa3; border-color: rgba(255,93,115,.45); }
+.btn.danger:hover { background: rgba(255,93,115,.14); }
 .board-sum {
   display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
   margin: 10px 14px 2px; padding: 8px 10px; border: 1px solid rgba(245,196,81,.22);
@@ -701,7 +731,7 @@ INDEX_TEMPLATE = """<!doctype html>
 </head>
 <body>
 <div class="wrap">
-  <div class="brandbar"><span class="logo">弹</span><span>__TITLE__</span></div>
+  <div class="brandbar"><span class="logo">弹</span><span>抖音弹幕归档</span></div>
   <div class="hero">
     <div class="kicker">Douyin Live Archive</div>
     <h1>直播弹幕与礼物<br>按天归档</h1>
@@ -755,7 +785,7 @@ DAY_TEMPLATE = """<!doctype html>
 </head>
 <body>
 <div class="wrap">
-  <div class="brandbar"><span class="logo">弹</span><a href="index.html">__TITLE__</a></div>
+  <div class="brandbar"><span class="logo">弹</span><a href="index.html">抖音弹幕归档</a></div>
   <div class="daynav"><a class="back" href="index.html">← 返回日期列表</a><span class="badge">__BADGE_TEXT__</span></div>
   <div class="day-title"><h1>__DATE__</h1><span class="weekday">__WEEKDAY__ · 直播记录</span></div>
   <div class="day-meta">__ROOM_META__</div>
@@ -779,6 +809,7 @@ DAY_TEMPLATE = """<!doctype html>
         </div>
         <input id="search" class="search" placeholder="搜索昵称 / 用户 ID / 内容 / 礼物…">
         <button class="btn" id="export-day">导出当日 CSV</button>
+        <button class="btn danger" id="delete-day">删除当日</button>
       </div>
       <div class="table-wrap">
         <table>
@@ -908,6 +939,23 @@ function downloadDayCsv() {
   URL.revokeObjectURL(a.href);
 }
 document.getElementById("export-day").addEventListener("click", downloadDayCsv);
+async function deleteDay() {
+  const day = "__DATE__";
+  if (!confirm("确定从归档中删除 " + day + " 的记录吗？原始日志会保留。" )) return;
+  try {
+    const resp = await fetch("/api/delete-day", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({day: day})
+    });
+    const result = await resp.json().catch(() => ({}));
+    if (!resp.ok || !result.ok) throw new Error(result.error || "删除失败");
+    location.href = "index.html";
+  } catch (err) {
+    alert("删除失败：" + err.message + String.fromCharCode(10) + String.fromCharCode(10) + "请从弹幕助手打开归档网站后再删除。" );
+  }
+}
+document.getElementById("delete-day").addEventListener("click", deleteDay);
 </script>
 </body>
 </html>
@@ -1028,6 +1076,12 @@ def build_site(
             _render_day(title, day, day_rows, mock, meta=meta, live_id=live_id),
             encoding="utf-8",
         )
+    for stale in out.glob("????-??-??.html"):
+        if stale.stem not in days:
+            try:
+                stale.unlink()
+            except OSError:
+                pass
     manifest = {
         "title": title,
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
