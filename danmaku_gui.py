@@ -414,10 +414,11 @@ class DanmakuClient(DouyinLiveWebFetcher):
         unit = int(gift.diamond_count or 0)
         icon_url = ""
         try:
-            image = gift.image or gift.icon
-            urls = list(getattr(image, "url_list_list", []) or [])
-            if urls:
-                icon_url = str(urls[0])
+            for image in (gift.image, gift.icon):
+                urls = list(getattr(image, "url_list_list", []) or [])
+                if urls:
+                    icon_url = str(urls[0])
+                    break
         except Exception:
             icon_url = ""
 
