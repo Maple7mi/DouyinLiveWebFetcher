@@ -95,17 +95,17 @@ class AuroraApp:
         self.total_events = 0
         self.gift_rows: dict[str, dict] = {}
         self.gift_order: list[str] = []
+        self.chat_rows: list[dict] = []
+        self._pv_text = ""
+        self._online_text = "--"
         self._last_auto_export_events = -1
         self._auto_export_job = None
         self.site_server = None
         self._site_server_dir: Path | None = None
 
         self._setup_style()
-        self._build_topbar()
-        self._build_cookiebar()
-        self._build_metrics()
-        self._build_feed()
-        self._build_statusbar()
+        self._build_bottombar()
+        self._build_shell()
 
         self.root.after(60, self._dark_titlebar)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -161,6 +161,379 @@ class AuroraApp:
             "Aurora.Treeview.Heading",
             background=[("active", "#1b2230")],
         )
+
+    # ------------------------------------------------------------------
+    # 70 / 30 主布局
+    # ------------------------------------------------------------------
+    def _build_shell(self):
+        self.shell = tk.Frame(self.root, bg=BG)
+        self.shell.pack(fill="both", expand=True, padx=14, pady=(12, 4))
+        self.shell.grid_rowconfigure(0, weight=1)
+        self.shell.grid_columnconfigure(0, weight=7)
+        self.shell.grid_columnconfigure(1, weight=3)
+
+        self.left_col = tk.Frame(self.shell, bg=BG)
+        self.left_col.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
+        self.right_col = tk.Frame(self.shell, bg=BG)
+        self.right_col.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
+
+        self._build_chat_panel(self.left_col)
+        self._build_sidebar(self.right_col)
+
+    def _build_chat_panel(self, parent):
+        panel = tk.Frame(parent, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
+        panel.pack(fill="both", expand=True)
+
+        head = tk.Frame(panel, bg=CARD)
+        head.pack(fill="x", padx=18, pady=(15, 8))
+        tk.Frame(head, bg=ACCENT, width=3, height=21).pack(side="left", padx=(0, 9))
+        tk.Label(head, text="弹幕", bg=CARD, fg=FG, font=(FONT, 20, "bold")).pack(side="left")
+        tk.Label(
+            head, text="聊天 / 入场 / 礼物", bg=CARD, fg=MUTED, font=(FONT, 12)
+        ).pack(side="left", padx=(9, 0), pady=(5, 0))
+        self.chat_badge = tk.Label(
+            head, text="0", bg="#1a2030", fg="#aeb9cc", font=(FONT, 12, "bold"),
+            padx=9, pady=2,
+        )
+        self.chat_badge.pack(side="right")
+
+        legend = tk.Frame(panel, bg=CARD)
+        legend.pack(fill="x", padx=18, pady=(0, 8))
+        tk.Label(
+            legend,
+            text="消费 35+ / 粉丝 15+",
+            bg=CARD, fg=GOLD, font=(FONT, 13),
+        ).pack(side="left")
+        tk.Label(
+            legend,
+            text="消费 40+ / 粉丝 18+",
+            bg=CARD, fg="#ff8d9b", font=(FONT, 13),
+        ).pack(side="left", padx=(16, 0))
+        tk.Label(
+            legend,
+            text="入场 15+",
+            bg=CARD, fg=CYAN, font=(FONT, 13),
+        ).pack(side="left", padx=(16, 0))
+        tk.Label(
+            legend,
+            text="礼物 90+",
+            bg=CARD, fg=MAGENTA, font=(FONT, 13),
+        ).pack(side="left", padx=(16, 0))
+
+        table_head = tk.Frame(panel, bg="#151a25")
+        table_head.pack(fill="x", padx=12)
+        for text, width in (("消费等级", 6), ("粉丝团", 6), ("昵称", 10)):
+            tk.Label(
+                table_head, text=text, width=width, anchor="w", bg="#151a25",
+                fg="#8d99ae", font=(FONT, 13, "bold"),
+            ).pack(side="left", padx=(10, 0), pady=7)
+        tk.Label(
+            table_head, text="弹幕内容", anchor="w", bg="#151a25",
+            fg="#8d99ae", font=(FONT, 13, "bold"),
+        ).pack(side="left", padx=(10, 0), pady=7)
+
+        body = tk.Frame(panel, bg=CARD)
+        body.pack(fill="both", expand=True, padx=10, pady=(0, 0))
+        self.chat_canvas = tk.Canvas(
+            body, bg=CARD, highlightthickness=0, borderwidth=0, yscrollincrement=30
+        )
+        self.chat_scroll = tk.Scrollbar(
+            body, orient="vertical", command=self.chat_canvas.yview,
+            bg="#171d29", troughcolor=CARD, activebackground="#2a3548",
+            highlightthickness=0, bd=0, relief="flat", width=11,
+        )
+        self.chat_canvas.configure(yscrollcommand=self.chat_scroll.set)
+        self.chat_scroll.pack(side="right", fill="y")
+        self.chat_canvas.pack(side="left", fill="both", expand=True)
+        self.chat_list = tk.Frame(self.chat_canvas, bg=CARD)
+        self.chat_window = self.chat_canvas.create_window(
+            (0, 0), window=self.chat_list, anchor="nw"
+        )
+        self.chat_canvas.bind("<Configure>", self._chat_canvas_resize)
+        self.chat_list.bind("<Configure>", self._sync_chat_scroll)
+        self.chat_canvas.bind("<MouseWheel>", self._on_chat_wheel)
+        self.chat_list.bind("<MouseWheel>", self._on_chat_wheel)
+        self.chat_rows = []
+
+        self.chat_placeholder = tk.Label(
+            body, text="等待弹幕…", bg=CARD, fg="#647086", font=(FONT, 15)
+        )
+        self.chat_placeholder.place(relx=0.5, rely=0.5, anchor="center")
+
+        foot = tk.Frame(panel, bg=CARD)
+        foot.pack(fill="x", padx=18, pady=(5, 9))
+        tk.Label(
+            foot, text="双击弹幕可复制完整内容", bg=CARD, fg="#657187", font=(FONT, 11)
+        ).pack(side="left")
+        tk.Label(
+            foot, text="仅显示实时消息", bg=CARD, fg="#657187", font=(FONT, 11)
+        ).pack(side="right")
+
+    def _build_sidebar(self, parent):
+        # 品牌
+        brand = tk.Frame(parent, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
+        brand.pack(fill="x", pady=(0, 8))
+        logo = tk.Label(
+            brand, text="弹", bg=ACCENT, fg="#fff", font=(FONT, 17, "bold"),
+            width=2, height=1,
+        )
+        logo.pack(side="left", padx=(13, 10), pady=11)
+        brand_text = tk.Frame(brand, bg=CARD)
+        brand_text.pack(side="left", pady=9)
+        tk.Label(brand_text, text=APP_NAME, bg=CARD, fg=FG, font=(FONT, 18, "bold")).pack(anchor="w")
+        tk.Label(
+            brand_text, text="AURORA DARK · LIVE", bg=CARD, fg=MUTED, font=(FONT, 9)
+        ).pack(anchor="w", pady=(1, 0))
+
+        # 房间 + 连接状态
+        room = tk.Frame(parent, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
+        room.pack(fill="x", pady=(0, 8))
+        status_line = tk.Frame(room, bg=CARD)
+        status_line.pack(fill="x", padx=12, pady=(10, 7))
+        self.status_dot = tk.Canvas(status_line, width=9, height=9, bg=CARD, highlightthickness=0)
+        self.status_dot.pack(side="left", padx=(0, 6))
+        self._dot = self.status_dot.create_oval(1, 1, 8, 8, fill=MUTED, outline="")
+        self.status_var = tk.StringVar(value="未连接")
+        tk.Label(
+            status_line, textvariable=self.status_var, bg=CARD, fg=MUTED, font=(FONT, 10)
+        ).pack(side="left")
+        self.online_top_var = tk.StringVar(value="在线 --")
+        tk.Label(
+            status_line, textvariable=self.online_top_var, bg=CARD, fg=GREEN,
+            font=(FONT, 11, "bold"),
+        ).pack(side="left", padx=(10, 0))
+
+        self.room_var = tk.StringVar(value="https://live.douyin.com/32063570834")
+        room_wrap = tk.Frame(room, bg=BORDER)
+        room_wrap.pack(fill="x", padx=12)
+        room_entry = tk.Entry(
+            room_wrap, textvariable=self.room_var, bg=FIELD, fg=FG,
+            insertbackground=FG, relief="flat", font=(FONT, 10),
+        )
+        room_entry.pack(fill="x", ipady=7, padx=1, pady=1)
+        room_entry.bind("<Return>", lambda _e: self.connect())
+
+        actions = tk.Frame(room, bg=CARD)
+        actions.pack(fill="x", padx=12, pady=(7, 11))
+        self.connect_btn = tk.Button(
+            actions, text="连接", command=self.connect, bg=ACCENT, fg="#ffffff",
+            activebackground=ACCENT_DIM, activeforeground="#ffffff", relief="flat",
+            bd=0, font=(FONT, 11, "bold"), padx=12, pady=7, cursor="hand2",
+            disabledforeground="#e9e4ff",
+        )
+        self.connect_btn.pack(side="left", fill="x", expand=True)
+        self.disconnect_btn = tk.Button(
+            actions, text="断开", command=self.disconnect, bg="#1a2030", fg=MUTED,
+            activebackground="#222a3c", activeforeground=FG, relief="flat", bd=0,
+            font=(FONT, 10), padx=8, pady=7, cursor="hand2", state="disabled",
+        )
+        self.disconnect_btn.pack(side="left", fill="x", expand=True, padx=(5, 0))
+        self.export_btn = tk.Button(
+            actions, text="导出", command=self.export_site, bg="#1a2030", fg="#c9d3e5",
+            activebackground="#222a3c", activeforeground=FG, relief="flat", bd=0,
+            font=(FONT, 10), padx=8, pady=7, cursor="hand2",
+        )
+        self.export_btn.pack(side="left", fill="x", expand=True, padx=(5, 0))
+
+        # 2x2 指标
+        metrics = tk.Frame(parent, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
+        metrics.pack(fill="x", pady=(0, 8))
+        specs = [
+            ("online", "当前在线", "人", ACCENT),
+            ("gain", "本场涨粉", "人", BLUE),
+            ("payers", "付费人数", "人", RED),
+            ("gift", "礼物总额", "钻", GOLD),
+        ]
+        self.summary_vars: dict[str, tk.StringVar] = {}
+        for idx, (key, label, unit, color) in enumerate(specs):
+            r, c = divmod(idx, 2)
+            metrics.grid_columnconfigure(c, weight=1)
+            cell = tk.Frame(metrics, bg=CARD)
+            cell.grid(row=r, column=c, sticky="nsew", padx=(12 if c == 0 else 7, 12 if c == 1 else 7), pady=9)
+            tk.Label(cell, text=label, bg=CARD, fg=MUTED, font=(FONT, 11)).pack(anchor="w")
+            line = tk.Frame(cell, bg=CARD)
+            line.pack(anchor="w")
+            var = tk.StringVar(value="--")
+            self.summary_vars[key] = var
+            tk.Label(
+                line, textvariable=var, bg=CARD,
+                fg=GOLD if key == "gift" else FG,
+                font=(FONT, 24, "bold"),
+            ).pack(side="left")
+            tk.Label(line, text=unit, bg=CARD, fg=MUTED, font=(FONT, 10)).pack(
+                side="left", padx=(3, 0), pady=(0, 3)
+            )
+            if key == "payers":
+                self.payer_detail = tk.StringVar(value="")
+                tk.Label(
+                    cell, textvariable=self.payer_detail, bg=CARD, fg=MUTED, font=(FONT, 9)
+                ).pack(anchor="w")
+
+        # 礼物
+        gift_card = tk.Frame(parent, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
+        gift_card.pack(fill="both", expand=True)
+        gift_head = tk.Frame(gift_card, bg=CARD)
+        gift_head.pack(fill="x", padx=12, pady=(10, 6))
+        tk.Label(
+            gift_head, text="GIFT FEED", bg=CARD, fg=MAGENTA, font=(FONT, 9, "bold")
+        ).pack(side="left")
+        tk.Label(
+            gift_head, text="礼物 · 最近 5 条", bg=CARD, fg=FG, font=(FONT, 14, "bold")
+        ).pack(side="left", padx=(6, 0))
+        self.gift_badge = tk.Label(
+            gift_head, text="0", bg="#2a1020", fg="#ffb4d6", font=(FONT, 9, "bold"),
+            padx=7, pady=1,
+        )
+        self.gift_badge.pack(side="right")
+
+        gift_body = tk.Frame(gift_card, bg=CARD)
+        gift_body.pack(fill="x", padx=8, pady=(0, 8))
+        self.gift_canvas = tk.Canvas(
+            gift_body, bg=CARD, height=280, highlightthickness=0, borderwidth=0, yscrollincrement=30
+        )
+        self.gift_scroll = tk.Scrollbar(
+            gift_body, orient="vertical", command=self.gift_canvas.yview, width=9,
+            bg="#241522", troughcolor="#0c1018", activebackground=MAGENTA,
+            relief="flat", borderwidth=0,
+        )
+        self.gift_canvas.configure(yscrollcommand=self.gift_scroll.set)
+        self.gift_scroll.pack(side="right", fill="y")
+        self.gift_canvas.pack(side="left", fill="both", expand=True)
+        self.gift_list = tk.Frame(self.gift_canvas, bg=CARD)
+        self.gift_window = self.gift_canvas.create_window(
+            (0, 0), window=self.gift_list, anchor="nw"
+        )
+        self.gift_canvas.bind("<Configure>", self._sync_gift_canvas)
+        self.gift_list.bind("<Configure>", self._sync_gift_scroll)
+        self.gift_canvas.bind("<MouseWheel>", self._on_gift_wheel)
+        self.gift_list.bind("<MouseWheel>", self._on_gift_wheel)
+        self.gift_placeholder = None
+        self._show_gift_placeholder()
+
+        gift_foot = tk.Frame(gift_card, bg=CARD)
+        gift_foot.pack(side="bottom", fill="x", padx=12, pady=(0, 8))
+        tk.Label(
+            gift_foot,
+            text="仅显示整组累计 >90 钻 · 滚轮回看",
+            bg=CARD,
+            fg="#657187",
+            font=(FONT, 9),
+        ).pack(side="left")
+
+    def _build_bottombar(self):
+        bar = tk.Frame(self.root, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
+        bar.pack(side="bottom", fill="x", padx=14, pady=(0, 8))
+        row = tk.Frame(bar, bg=CARD)
+        row.pack(fill="x", padx=10, pady=(5, 2))
+        tk.Label(row, text="Cookie", bg=CARD, fg=MUTED, font=(FONT, 9, "bold")).pack(side="left")
+        self.cookie_var = tk.StringVar()
+        wrap = tk.Frame(row, bg=BORDER)
+        wrap.pack(side="left", fill="x", expand=True, padx=(7, 7))
+        self.cookie_entry = tk.Entry(
+            wrap, textvariable=self.cookie_var, bg=FIELD, fg=FG, insertbackground=FG,
+            relief="flat", font=(FONT, 9), show="•",
+        )
+        self.cookie_entry.pack(fill="x", ipady=3, padx=1, pady=1)
+        for text, command in (
+            ("读取", self._load_cookie_file),
+            ("保存", self._save_cookie_file),
+            ("清除", self._clear_cookie),
+        ):
+            tk.Button(
+                row, text=text, command=command, bg="#1a2030", fg="#b8c3d6",
+                activebackground="#222a3c", activeforeground=FG, relief="flat", bd=0,
+                font=(FONT, 9), padx=8, pady=3, cursor="hand2",
+            ).pack(side="left", padx=(3, 0))
+        self.cookie_hint_var = tk.StringVar(value="未填 Cookie：只能收弹幕")
+        tk.Label(
+            row, textvariable=self.cookie_hint_var, bg=CARD, fg="#778399", font=(FONT, 9)
+        ).pack(side="left", padx=(8, 0))
+
+        bottom = tk.Frame(bar, bg=CARD)
+        bottom.pack(fill="x", padx=10, pady=(0, 5))
+        self.hint_var = tk.StringVar(value="等待连接")
+        tk.Label(
+            bottom, textvariable=self.hint_var, bg=CARD, fg="#778399", font=(FONT, 9)
+        ).pack(side="left")
+        self.csv_var = tk.StringVar(value="")
+        tk.Label(
+            bottom, textvariable=self.csv_var, bg=CARD, fg="#596579", font=(FONT, 8)
+        ).pack(side="right")
+
+        if (app_dir() / "cookie.txt").exists():
+            self._load_cookie_file(silent=True)
+
+    def _chat_canvas_resize(self, event=None):
+        try:
+            self.chat_canvas.itemconfigure(
+                self.chat_window, width=max(1, self.chat_canvas.winfo_width())
+            )
+        except Exception:
+            pass
+        wrap = max(260, self.chat_canvas.winfo_width() - 365)
+        for row in self.chat_rows:
+            try:
+                row["content"].configure(wraplength=wrap)
+            except Exception:
+                pass
+        self._sync_chat_scroll()
+
+    def _sync_chat_scroll(self, event=None):
+        try:
+            self.chat_canvas.configure(scrollregion=self.chat_canvas.bbox("all"))
+        except Exception:
+            pass
+
+    def _on_chat_wheel(self, event):
+        self.chat_canvas.yview_scroll(-3 if event.delta > 0 else 3, "units")
+        return "break"
+
+    def _chat_bg(self, tags) -> tuple[str, str, str]:
+        tags = tuple(tags or ())
+        if "super" in tags:
+            return "#2e1218", "#ffd7e5", "super"
+        if "hot" in tags:
+            return "#2a2312", "#ffe5a6", "hot"
+        if "entry" in tags:
+            return "#062d36", "#bdf8ff", "entry"
+        return (CARD if self.chat_count % 2 == 0 else "#0d1119"), "#dfe5f4", "normal"
+
+    def _add_chat_row(self, values, tags):
+        bg, fg, kind = self._chat_bg(tags)
+        pay, fan, nick, content = values
+        frame = tk.Frame(self.chat_list, bg=bg)
+        frame.pack(fill="x")
+        frame.grid_columnconfigure(3, weight=1)
+
+        p = tk.Label(frame, text=pay, bg=bg, fg=fg, font=(FONT, 16), width=6, anchor="w")
+        p.grid(row=0, column=0, sticky="nw", padx=(10, 0), pady=6)
+        f = tk.Label(frame, text=fan, bg=bg, fg=fg, font=(FONT, 16), width=6, anchor="w")
+        f.grid(row=0, column=1, sticky="nw", padx=(4, 0), pady=6)
+        n = tk.Label(frame, text=nick, bg=bg, fg=fg, font=(FONT, 18, "bold"), width=10, anchor="w")
+        n.grid(row=0, column=2, sticky="nw", padx=(4, 0), pady=6)
+        c = tk.Label(
+            frame, text=content, bg=bg, fg=fg, font=(FONT, 18),
+            anchor="w", justify="left",
+            wraplength=max(260, self.chat_canvas.winfo_width() - 365),
+        )
+        c.grid(row=0, column=3, sticky="nsew", padx=(6, 10), pady=6)
+
+        info = {"frame": frame, "content": c, "text": content}
+        self.chat_rows.append(info)
+        for widget in (frame, p, f, n, c):
+            widget.bind("<Double-1>", lambda _e, t=content: self._copy_chat(text=t))
+            widget.bind("<MouseWheel>", self._on_chat_wheel, add="+")
+
+        while len(self.chat_rows) > 500:
+            old = self.chat_rows.pop(0)
+            old["frame"].destroy()
+
+        self.chat_count += 1
+        self.chat_badge.configure(text=fmt_int(self.chat_count))
+        self._hide_chat_placeholder()
+        self.chat_canvas.update_idletasks()
+        self._sync_chat_scroll()
+        self.chat_canvas.yview_moveto(1.0)
 
     # ------------------------------------------------------------------
     # 顶栏
@@ -652,93 +1025,67 @@ class AuroraApp:
         row = tk.Frame(
             self.gift_list,
             bg=bg,
+            height=48,
             highlightbackground="#4a1d35",
             highlightthickness=1,
         )
-        row.pack(fill="x", pady=2)
+        row.pack(fill="x", pady=0)
+        row.pack_propagate(False)
+        row.grid_columnconfigure(0, weight=1)
         left = tk.Frame(row, bg=bg)
-        left.pack(side="left", fill="x", expand=True, padx=9, pady=5)
+        left.grid(row=0, column=0, sticky="ew", padx=(8, 0), pady=7)
 
-        pay = tk.Label(
-            left,
-            text="",
-            bg=bg,
-            fg=GOLD,
-            font=(FONT, 9, "bold"),
-            width=9,
-            anchor="w",
-        )
-        pay.pack(side="left")
-        fan = tk.Label(
-            left,
-            text="",
-            bg=bg,
-            fg=CYAN,
-            font=(FONT, 9, "bold"),
-            width=8,
-            anchor="w",
-        )
-        fan.pack(side="left")
         nick = tk.Label(
             left,
             text="",
             bg=bg,
-            fg=FG,
-            font=(FONT, 10, "bold"),
+            fg="#f2f5ff",
+            font=(FONT, 18, "bold"),
             anchor="w",
+            width=7,
         )
-        nick.pack(side="left", padx=(0, 4))
-        pre = tk.Label(left, text="送出了", bg=bg, fg="#cbb3c2", font=(FONT, 11))
-        pre.pack(side="left")
+        nick.pack(side="left")
+        pre = tk.Label(left, text="送出了", bg=bg, fg="#9aa6ba", font=(FONT, 13))
+        pre.pack(side="left", padx=(4, 0))
         gift = tk.Label(
             left,
             text="",
             bg=bg,
-            fg="#ffd7e8",
-            font=(FONT, 13, "bold"),
+            fg="#ff9cc5",
+            font=(FONT, 18, "bold"),
             anchor="w",
+            width=10,
         )
-        gift.pack(side="left", padx=(2, 0))
+        gift.pack(side="left", padx=(3, 0))
         mult = tk.Label(
-            left,
+            row,
             text="",
             bg=bg,
             fg=GOLD,
-            font=(FONT, 13, "bold"),
-            anchor="w",
+            font=(FONT, 18, "bold"),
+            anchor="e",
             padx=0,
         )
-        mult.pack(side="left")
-
-        for label in (pay, fan, nick, pre, gift, mult):
-            label.configure(padx=0)
-        gift.pack_configure(padx=0)
-        mult.pack_configure(padx=0)
+        mult.grid(row=0, column=1, sticky="e", padx=(3, 8), pady=7)
 
         self._bind_gift_wheel(row)
         return {
             "key": key,
             "frame": row,
-            "pay": pay,
-            "fan": fan,
             "nick": nick,
             "gift": gift,
             "mult": mult,
         }
 
     def _update_gift_row(self, info: dict, event: dict):
-        pay = int(event.get("pay_level") or 0)
-        level = int(event.get("fans_club_level") or 0)
         count = int(event.get("gift_count") or 0)
-        info["pay"].configure(text=f"消费Lv.{pay}" if pay else "消费Lv.-")
-        info["fan"].configure(text=f"粉丝Lv.{level}" if level else "粉丝Lv.-")
         nickname = str(event.get("nickname") or "未记录昵称")
-        if len(nickname) > 14:
-            nickname = nickname[:13] + "…"
+        if len(nickname) > 10:
+            nickname = nickname[:9] + "…"
         info["nick"].configure(text=nickname)
         info["gift"].configure(text=f"【{event.get('gift_name', '')}】")
         info["mult"].configure(
-            text=f"x{count}，价值{fmt_int(event.get('diamonds', 0))}钻"
+            text=f"×{count}  价值{fmt_int(event.get('diamonds', 0))}钻"
         )
 
     def _add_gift_row(self, event: dict) -> dict:
@@ -1009,7 +1356,8 @@ class AuroraApp:
             online = event.get("online")
             if online:
                 self.summary_vars["online"].set(fmt_int(online))
-                self.online_top_var.set(f"在线 {fmt_int(online)}")
+                self._online_text = fmt_int(online)
+                self._refresh_online_top()
             gain = event.get("follower_gain")
             if gain is not None:
                 self.summary_vars["gain"].set(f"+{fmt_int(gain)}")
@@ -1023,7 +1371,8 @@ class AuroraApp:
                 self.summary_vars["gift"].set(fmt_int(diamonds))
             pv = event.get("pv")
             if pv:
-                self.summary_vars["pv"].set(str(pv))
+                self._pv_text = str(pv)
+                self._refresh_online_top()
             msg_count = event.get("msg_count")
             if msg_count:
                 self.hint_var.set(f"已接收 {fmt_int(msg_count)} 条消息")
@@ -1066,33 +1415,24 @@ class AuroraApp:
             self.hint_var.set(event.get("text", ""))
 
     def _append(self, values, tags):
-        iid = self.chat_tree.insert("", "end", values=values, tags=tags)
-        children = self.chat_tree.get_children()
-        if len(children) > 800:
-            for item in children[: len(children) - 800]:
-                self.chat_tree.delete(item)
-        self.chat_tree.see(iid)
-        self.chat_count += 1
-        self.chat_badge.configure(text=fmt_int(self.chat_count))
+        self._add_chat_row(values, tags)
 
     def _hide_chat_placeholder(self):
         if self.chat_placeholder is not None:
             self.chat_placeholder.place_forget()
             self.chat_placeholder = None
 
-    def _copy_chat(self, event):
-        item = self.chat_tree.identify_row(event.y)
-        if not item:
+    def _copy_chat(self, event=None, text=None):
+        if text is None:
             return
-        values = self.chat_tree.item(item, "values")
-        if len(values) >= 4:
-            self.root.clipboard_clear()
-            self.root.clipboard_append(str(values[3]))
-            self.hint_var.set("已复制完整弹幕内容")
+        self.root.clipboard_clear()
+        self.root.clipboard_append(str(text))
+        self.hint_var.set("已复制完整弹幕内容")
 
     def _clear_feed(self):
-        for item in self.chat_tree.get_children():
-            self.chat_tree.delete(item)
+        for info in self.chat_rows:
+            info["frame"].destroy()
+        self.chat_rows.clear()
         for info in self.gift_rows.values():
             info["frame"].destroy()
         self.gift_rows.clear()
@@ -1107,11 +1447,11 @@ class AuroraApp:
         self.gift_badge.configure(text="0")
         if self.chat_placeholder is None:
             self.chat_placeholder = tk.Label(
-                self.chat_tree.master,
+                self.chat_canvas.master,
                 text="等待弹幕…",
                 bg=CARD,
                 fg="#647086",
-                font=(FONT, 10),
+                font=(FONT, 15),
             )
             self.chat_placeholder.place(relx=0.5, rely=0.5, anchor="center")
         else:
@@ -1119,7 +1459,15 @@ class AuroraApp:
         for var in self.summary_vars.values():
             var.set("--")
         self.payer_detail.set("")
+        self._online_text = "--"
+        self._pv_text = ""
         self.online_top_var.set("在线 --")
+
+    def _refresh_online_top(self):
+        text = f"在线 {self._online_text}"
+        if self._pv_text:
+            text += f" · 累计 {self._pv_text}"
+        self.online_top_var.set(text)
 
     def _set_status(self, text: str, color: str):
         self.status_var.set(text)
