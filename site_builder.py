@@ -42,7 +42,20 @@ def _clean(value: Any) -> str:
     return str(value or "").strip()
 
 
-def _normalize(row: dict[str, Any]) -> dict[str, Any] | None:
+def _file_session_date(path: Path) -> str:
+    """从采集文件名推断直播日；跨午夜的同一文件归开播当天。"""
+    match = re.search(r"_(\d{8})_(\d{6})\.(?:csv|jsonl)$", path.name)
+    if not match:
+        return ""
+    try:
+        return datetime.strptime(match.group(1), "%Y%m%d").strftime("%Y-%m-%d")
+    except ValueError:
+        return ""
+
+
+def _normalize(
+    row: dict[str, Any], session_date: str = ""
+) -> dict[str, Any] | None:
     received = _clean(row.get("received_at"))
     if not received:
         return None
@@ -65,6 +78,9 @@ def _normalize(row: dict[str, Any]) -> dict[str, Any] | None:
         "diamonds": _int(row.get("diamonds")),
         "group_id": _clean(row.get("group_id")),
         "visible": _int(row.get("visible")),
+        "session_date": _clean(row.get("session_date"))
+        or session_date
+        or received[:10],
     }
 
 
@@ -80,6 +96,7 @@ def _load_raw_gifts(
     result: dict[str, dict[str, Any]] = {}
     pattern = f"gifts_raw_{live_id}_*.jsonl" if live_id else "gifts_raw_*.jsonl"
     for path in sorted(log_dir.glob(pattern)):
+        session = _file_session_date(path)
         groups: dict[str, dict[str, Any]] = {}
         try:
             lines = path.read_text(encoding="utf-8").splitlines()
@@ -105,6 +122,7 @@ def _load_raw_gifts(
                     gid,
                     {
                         "date": ts[:10],
+                        "session_date": session,
                         "user_id": uid,
                         "gift_name": name,
                         "unit": unit,
@@ -132,8 +150,9 @@ def _load_raw_gifts(
                     "diamonds": unit * count,
                     "group_id": "",
                     "visible": 1 if unit * count > 90 else 0,
+                    "session_date": session,
                 }
-                key = f"m|{ts[:10]}|{msg_id}|{uid}"
+                key = f"m|{session}|{msg_id}|{uid}"
                 old = result.get(key)
                 if old is None or row["diamonds"] > old["diamonds"]:
                     result[key] = row
@@ -153,8 +172,9 @@ def _load_raw_gifts(
                 "diamonds": item["unit"] * count,
                 "group_id": gid,
                 "visible": 1 if item["unit"] * count > 90 else 0,
+                "session_date": item["session_date"],
             }
-            key = f"g|{item['date']}|{gid}|{item['user_id']}"
+            key = f"g|{item['session_date']}|{gid}|{item['user_id']}"
             old = result.get(key)
             if old is None or row["diamonds"] > old["diamonds"]:
                 result[key] = row
@@ -235,10 +255,11 @@ def load_messages_from_logs(
 
     csv_pattern = f"gui_{live_id}_*.csv" if live_id else "gui_*.csv"
     for path in sorted(log_dir.glob(csv_pattern)):
+        session = _file_session_date(path)
         try:
             with path.open("r", encoding="utf-8-sig", newline="") as fh:
                 for raw in csv.DictReader(fh):
-                    row = _normalize(raw)
+                    row = _normalize(raw, session)
                     if not row:
                         continue
                     if row["user_id"]:
@@ -249,9 +270,9 @@ def load_messages_from_logs(
                         }
                     if row["kind"] == "gift":
                         key = (
-                            f"g|{row['received_at'][:10]}|{row['group_id']}|{row['user_id']}"
+                            f"g|{row['session_date']}|{row['group_id']}|{row['user_id']}"
                             if row["group_id"]
-                            else f"m|{row['received_at'][:10]}|{row['msg_id']}|{row['user_id']}"
+                            else f"m|{row['session_date']}|{row['msg_id']}|{row['user_id']}"
                         )
                         old = gift_best.get(key)
                         # 同一连击会写多行，保留整组累计最大的一行
@@ -277,7 +298,7 @@ def load_messages_from_logs(
     rows = list(chat_best.values()) + list(gift_best.values())
     deleted_days = load_deleted_days(log_dir, live_id)
     if deleted_days:
-        rows = [r for r in rows if r["received_at"][:10] not in deleted_days]
+        rows = [r for r in rows if r["session_date"] not in deleted_days]
     rows.sort(key=lambda r: (r["received_at"], r["msg_id"]))
     return rows
 
@@ -526,10 +547,20 @@ def _leaderboard(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     )
 
 
+def _session_range(rows: list[dict[str, Any]]) -> str:
+    times = sorted(r["received_at"] for r in rows if r.get("received_at"))
+    if not times:
+        return ""
+    start, end = times[0], times[-1]
+    if start[:10] == end[:10]:
+        return f"{start[11:16]} — {end[11:16]}"
+    return f"{start[5:10]} {start[11:16]} — {end[5:10]} {end[11:16]}"
+
+
 def _group_days(rows: list[dict[str, Any]]) -> OrderedDict[str, list[dict[str, Any]]]:
     days: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        day = row["received_at"][:10]
+        day = row.get("session_date") or row["received_at"][:10]
         days.setdefault(day, []).append(row)
     return OrderedDict(sorted(days.items(), reverse=True))
 
@@ -739,7 +770,7 @@ INDEX_TEMPLATE = """<!doctype html>
     <div class="hero-actions"><button class="btn" id="export-all">导出全部 CSV</button></div>
   </div>
   <div class="stats">
-    <div class="stat"><div class="label">收录天数</div><div class="value">__DAYS__</div><div class="sub">按自然日分类</div></div>
+    <div class="stat"><div class="label">收录天数</div><div class="value">__DAYS__</div><div class="sub">按直播日分类</div></div>
     <div class="stat"><div class="label">消息总数</div><div class="value">__MESSAGES__</div><div class="sub">弹幕 + 礼物 + 入场</div></div>
     <div class="stat"><div class="label">礼物总额</div><div class="value">__DIAMONDS__</div><div class="sub">单位：钻</div></div>
     <div class="stat"><div class="label">独立用户</div><div class="value">__USERS__</div><div class="sub">按用户 ID 去重</div></div>
@@ -759,7 +790,7 @@ function csvCell(value) {
   return (s.includes('"') || s.includes(",") || s.includes(String.fromCharCode(10))) ? '"' + s.replace(/"/g, '""') + '"' : s;
 }
 function downloadAllCsv() {
-  const cols = ["received_at","kind","user_id","nickname","fans_club_level","pay_level","content","gift_name","gift_count","diamonds"];
+  const cols = ["received_at","session_date","kind","user_id","nickname","fans_club_level","pay_level","content","gift_name","gift_count","diamonds"];
   const lines = [cols.join(",")];
   for (const r of ALL_DATA) lines.push(cols.map(c => csvCell(r[c])).join(","));
   const blob = new Blob([String.fromCharCode(0xFEFF) + lines.join(String.fromCharCode(10))], {type: "text/csv;charset=utf-8"});
@@ -787,8 +818,8 @@ DAY_TEMPLATE = """<!doctype html>
 <div class="wrap">
   <div class="brandbar"><span class="logo">弹</span><a href="index.html">抖音弹幕归档</a></div>
   <div class="daynav"><a class="back" href="index.html">← 返回日期列表</a><span class="badge">__BADGE_TEXT__</span></div>
-  <div class="day-title"><h1>__DATE__</h1><span class="weekday">__WEEKDAY__ · 直播记录</span></div>
-  <div class="day-meta">__ROOM_META__</div>
+  <div class="day-title"><h1>__DATE__</h1><span class="weekday">__WEEKDAY__ · 直播日</span></div>
+  <div class="day-meta">__ROOM_META__ · 直播阶段：__DAY_RANGE__</div>
   <div class="stats">
     <div class="stat"><div class="label">消息总数</div><div class="value">__MESSAGES__</div><div class="sub">弹幕 __CHAT__ · 入场 __ENTRY__</div></div>
     <div class="stat"><div class="label">礼物事件</div><div class="value">__GIFTS__</div><div class="sub">连击已按整组合并</div></div>
@@ -927,7 +958,7 @@ function csvCell(value) {
   return (s.includes('"') || s.includes(",") || s.includes(String.fromCharCode(10))) ? '"' + s.replace(/"/g, '""') + '"' : s;
 }
 function downloadDayCsv() {
-  const cols = ["received_at","kind","user_id","nickname","fans_club_level","pay_level","content","gift_name","gift_count","diamonds"];
+  const cols = ["received_at","session_date","kind","user_id","nickname","fans_club_level","pay_level","content","gift_name","gift_count","diamonds"];
   const lines = [cols.join(",")];
   for (const r of DATA) lines.push(cols.map(c => csvCell(r[c])).join(","));
   const blob = new Blob([String.fromCharCode(0xFEFF) + lines.join(String.fromCharCode(10))], {type: "text/csv;charset=utf-8"});
@@ -1050,6 +1081,7 @@ def _render_day(
         "__DATA__": _json_for_script(rows),
         "__BOARD__": _json_for_script(board),
         "__ROOM_META__": _room_meta_html(meta or {}, live_id),
+        "__DAY_RANGE__": html.escape(_session_range(rows)),
     }
     for key, value in replacements.items():
         page = page.replace(key, value)

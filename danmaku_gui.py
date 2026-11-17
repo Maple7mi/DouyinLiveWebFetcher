@@ -25,7 +25,7 @@ import time
 import tkinter as tk
 import traceback
 import webbrowser
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from tkinter import messagebox, ttk
 
@@ -37,10 +37,12 @@ from protobuf.douyin import (
     ChatMessage,
     ControlMessage,
     EmojiChatMessage,
+    FansclubMessage,
     GiftMessage,
     MemberMessage,
     PushFrame,
     Response,
+    RoomMessage,
     RoomStatsMessage,
     RoomUserSeqMessage,
     SocialMessage,
@@ -62,6 +64,11 @@ YELLOW = "#b26a00"
 BLUE = "#2563c9"
 FONT = "Microsoft YaHei UI"
 APP_NAME = "弹幕助手"
+SESSION_GAP_HOURS = 6
+MEMBERSHIP_PRICES = {
+    "星守护": 1280,
+    "会员": 980,
+}
 
 
 def app_dir() -> Path:
@@ -106,6 +113,9 @@ class DanmakuClient(DouyinLiveWebFetcher):
         self._csv_writer = None
         self._gift_raw = None
         self.csv_path: Path | None = None
+        self.session_date = datetime.now().strftime("%Y-%m-%d")
+        self._session_started_at = datetime.now().isoformat(timespec="seconds")
+        self._last_session_save = 0.0
 
     # -- 生命周期 ---------------------------------------------------------
     def run(self):
@@ -115,6 +125,7 @@ class DanmakuClient(DouyinLiveWebFetcher):
             while not self._stop.is_set():
                 if not self._wait_until_live():
                     break
+                self._maybe_roll_session_date()
                 self._emit("status", state="connecting", text="连接中…")
                 try:
                     self._connectWebSocket()
@@ -129,6 +140,21 @@ class DanmakuClient(DouyinLiveWebFetcher):
             self._close_logs()
             self._emit("status", state="stopped", text="已停止")
 
+    def _maybe_roll_session_date(self):
+        """等待了一整天后再开播：新开播日应另起一页，而不是沿用昨天。"""
+        now = datetime.now()
+        today = now.strftime("%Y-%m-%d")
+        if self.session_date == today:
+            return
+        try:
+            old = datetime.strptime(self.session_date, "%Y-%m-%d").date()
+        except ValueError:
+            old = now.date()
+        if (now.date() - old).days >= 1 and now.hour >= 6:
+            self.session_date = today
+            self._session_started_at = now.isoformat(timespec="seconds")
+            self._save_session_state(force=True)
+
     def _wait_until_live(self) -> bool:
         """未开播时保持等待，开播后再建立 WebSocket。"""
         while not self._stop.is_set():
@@ -136,7 +162,7 @@ class DanmakuClient(DouyinLiveWebFetcher):
             if live is not False:
                 return True
             self._emit("status", state="waiting", text="等待开播…")
-            if self._stop.wait(15):
+            if self._stop.wait(5):
                 return False
         return False
 
@@ -149,9 +175,55 @@ class DanmakuClient(DouyinLiveWebFetcher):
             except Exception:
                 pass
 
+    def _session_state_path(self) -> Path:
+        return app_dir() / "logs" / f"session_state_{self.live_id}.json"
+
+    def _resolve_session_date(self) -> str:
+        """同一场直播跨午夜时，沿用开播当天的日期。"""
+        now = datetime.now()
+        try:
+            state = json.loads(
+                self._session_state_path().read_text(encoding="utf-8-sig")
+            )
+            last = datetime.fromisoformat(state["last_event_at"])
+            if (
+                state.get("session_date")
+                and now - last <= timedelta(hours=SESSION_GAP_HOURS)
+            ):
+                self._session_started_at = state.get(
+                    "started_at", self._session_started_at
+                )
+                return str(state["session_date"])
+        except Exception:
+            pass
+        return now.strftime("%Y-%m-%d")
+
+    def _save_session_state(self, force: bool = False) -> None:
+        now = time.time()
+        if not force and now - self._last_session_save < 30:
+            return
+        self._last_session_save = now
+        try:
+            path = self._session_state_path()
+            path.parent.mkdir(exist_ok=True)
+            state = {
+                "live_id": self.live_id,
+                "session_date": self.session_date,
+                "started_at": self._session_started_at,
+                "last_event_at": datetime.now().isoformat(timespec="seconds"),
+            }
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(
+                json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            tmp.replace(path)
+        except Exception:
+            pass
+
     def _open_logs(self):
         logs = app_dir() / "logs"
         logs.mkdir(exist_ok=True)
+        self.session_date = self._resolve_session_date()
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.csv_path = logs / f"gui_{self.live_id}_{stamp}.csv"
         self._csv_file = self.csv_path.open("w", newline="", encoding="utf-8-sig")
@@ -171,9 +243,11 @@ class DanmakuClient(DouyinLiveWebFetcher):
                 "diamonds",
                 "group_id",
                 "visible",
+                "session_date",
             ]
         )
         self._csv_file.flush()
+        self._save_session_state(force=True)
         self._gift_raw = (logs / f"gifts_raw_{self.live_id}_{stamp}.jsonl").open(
             "w", encoding="utf-8"
         )
@@ -195,6 +269,7 @@ class DanmakuClient(DouyinLiveWebFetcher):
             self._debug(f"room meta failed: {exc!r}")
 
     def _close_logs(self):
+        self._save_session_state(force=True)
         for handle in (self._csv_file, self._gift_raw):
             try:
                 if handle:
@@ -239,9 +314,11 @@ class DanmakuClient(DouyinLiveWebFetcher):
                     data.get("diamonds", ""),
                     data.get("group_id", ""),
                     data.get("visible", ""),
+                    self.session_date,
                 ]
             )
             self._csv_file.flush()
+            self._save_session_state()
         except Exception:
             pass
 
@@ -317,6 +394,7 @@ class DanmakuClient(DouyinLiveWebFetcher):
             "WebcastEmojiChatMessage": self._parseEmojiChatMsg,
             "WebcastControlMessage": self._parseControlMsg,
             "WebcastFansclubMessage": self._parseFansclubMsg,
+            "WebcastRoomMessage": self._parseRoomMsg,
             "WebcastRoomRankMessage": self._parseRankMsg,
         }
         for msg in response.messages_list:
@@ -444,6 +522,11 @@ class DanmakuClient(DouyinLiveWebFetcher):
         group = int(message.group_id or 0)
         total_count = int(message.total_count or 0)
         unit = int(gift.diamond_count or 0)
+        if unit <= 0:
+            for name, value in MEMBERSHIP_PRICES.items():
+                if name in (gift.name or ""):
+                    unit = value
+                    break
 
         # 原始礼物消息留档，便于核对连击计数语义
         if self._gift_raw:
@@ -553,8 +636,60 @@ class DanmakuClient(DouyinLiveWebFetcher):
         self._emit_summary()
 
     def _parseFansclubMsg(self, payload):
-        # 目前不需要单独展示粉丝团升级/入团消息
-        pass
+        message = FansclubMessage().parse(payload)
+        self._record_membership(
+            content=message.content,
+            msg_id=str(message.common_info.msg_id or ""),
+            user=message.user,
+        )
+
+    def _parseRoomMsg(self, payload):
+        message = RoomMessage().parse(payload)
+        self._record_membership(
+            content=message.content,
+            msg_id=str(message.common.msg_id or ""),
+            user=None,
+        )
+
+    def _record_membership(self, content: str, msg_id: str, user):
+        """星守护/直播会员不是普通 GiftMessage，按付费事件补录。"""
+        text = str(content or "").strip()
+        label = ""
+        price = 0
+        for name, value in MEMBERSHIP_PRICES.items():
+            if name in text:
+                label = name
+                price = value
+                break
+        if not label or not price or not user or not user.id:
+            return
+        if not self._once("gift", msg_id):
+            return
+        club = user.fans_club.data if user.fans_club else None
+        level = int(club.level or 0) if club else 0
+        pay_level = int(user.pay_grade.level or 0) if user.pay_grade else 0
+        uid = str(user.id)
+        self._payers.add(uid)
+        if level > 0:
+            self._fan_payers.add(uid)
+        self._gift_diamonds += price
+        self._msg_count += 1
+        data = dict(
+            msg_id=msg_id,
+            user_id=uid,
+            nickname=user.nick_name,
+            fans_club_level=level,
+            pay_level=pay_level,
+            content=text or label,
+            gift_name=label,
+            gift_count=1,
+            diamonds=price,
+            group_id="",
+            visible=1,
+            group_key=msg_id or f"member-{uid}-{int(time.time())}",
+        )
+        self._write_csv("gift", **data)
+        self._emit("gift", **data)
 
     def _parseControlMsg(self, payload):
         message = ControlMessage().parse(payload)
