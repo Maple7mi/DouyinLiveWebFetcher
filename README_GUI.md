@@ -30,9 +30,10 @@ py -3.12 -m venv .venv
 获取方式：
 
 1. 用 Chrome / Edge 打开 `https://live.douyin.com/`，确认已经登录；
-2. 按 `F12` → `Network` → 筛选 `Fetch/XHR`，刷新页面；
-3. 点一条发往 `live.douyin.com` 的请求 → `Headers` → `Request Headers` → 复制 `Cookie` 的整行值；
-4. 把整行值粘贴到程序顶部的 **Cookie** 输入框，或保存为项目目录下的 `cookie.txt`（程序启动时自动读取）。
+2. 打开开发者工具：按 `Ctrl+Shift+I`，或右键页面 →「检查 / Inspect」，或浏览器菜单 →「更多工具」→「开发者工具」；
+3. 点 `Network`（网络）→ 筛选 `Fetch/XHR` → 刷新页面；
+4. 点一条发往 `live.douyin.com` 的请求 → `Headers` → `Request Headers` → 找到 `Cookie:`，复制整行值；
+5. 把整行值粘贴到程序顶部的 **Cookie** 输入框，点 **保存**；或保存为项目目录下的 `cookie.txt`（程序启动时自动读取）。
 
 `cookie.txt` 已加入 `.gitignore`，不会被提交。Cookie 等同于登录凭证，不要发给别人、不要截图外传；建议用一个只用于看直播的小号。
 

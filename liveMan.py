@@ -115,7 +115,10 @@ class DouyinLiveWebFetcher:
                        游客身份只能收到弹幕/进场等消息。
         """
         self.abogus_file = abogus_file
-        self.cookie = (cookie or '').strip().rstrip(';')
+        raw_cookie = (cookie or '').strip().replace('\r', '').replace('\n', '')
+        if raw_cookie.lower().startswith('cookie:'):
+            raw_cookie = raw_cookie.split(':', 1)[1].strip()
+        self.cookie = raw_cookie.rstrip(';')
         self.__ttwid = None
         self.__room_id = None
         self.session = requests.Session()

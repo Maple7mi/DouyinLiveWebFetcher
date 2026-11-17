@@ -11,3 +11,4 @@ logs/
 tmp_test*
 cookie.txt
 tmp_*
+~$*
