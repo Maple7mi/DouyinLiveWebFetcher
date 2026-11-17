@@ -21,6 +21,12 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 from collect import parse_live_id
+from browser_login import (
+    BrowserLoginCancelled,
+    BrowserLoginError,
+    clear_login_profile,
+    login_and_get_cookie,
+)
 from danmaku_gui import DanmakuClient, app_dir, fmt_int
 
 # ---------------------------------------------------------------------------
@@ -103,6 +109,8 @@ class AuroraApp:
         self._auto_export_job = None
         self.site_server = None
         self._site_server_dir: Path | None = None
+        self.login_thread: threading.Thread | None = None
+        self.login_cancel: threading.Event | None = None
 
         self._setup_style()
         self._build_bottombar()
@@ -227,7 +235,7 @@ class AuroraApp:
         for column, text, width, font_size, font_weight, padx in (
             (0, "消费等级", 6, 16, "normal", (10, 0)),
             (1, "粉丝团", 6, 16, "normal", (4, 0)),
-            (2, "昵称", 9, 18, "bold", (4, 0)),
+            (2, "昵称", 10, 18, "bold", (4, 0)),
         ):
             tk.Label(
                 table_head, text=text, width=width, anchor="w", bg="#151a25",
@@ -236,7 +244,7 @@ class AuroraApp:
         tk.Label(
             table_head, text="弹幕内容", anchor="w", bg="#151a25",
             fg="#8d99ae", font=(FONT, 18, "bold"),
-        ).grid(row=0, column=3, sticky="w", padx=(19, 10), pady=7)
+        ).grid(row=0, column=3, sticky="w", padx=(6, 10), pady=7)
 
         body = tk.Frame(panel, bg=CARD)
         body.pack(fill="both", expand=True, padx=10, pady=(0, 0))
@@ -341,6 +349,22 @@ class AuroraApp:
         )
         self.export_btn.pack(side="left", fill="x", expand=True, padx=(5, 0))
 
+        login_row = tk.Frame(room, bg=CARD)
+        login_row.pack(fill="x", padx=12, pady=(0, 11))
+        self.login_btn = tk.Button(
+            login_row, text="登录抖音", command=self._login_douyin, bg="#261b42",
+            fg="#e2d6ff", activebackground="#33245a", activeforeground="#ffffff",
+            relief="flat", bd=0, font=(FONT, 10, "bold"), padx=8, pady=5,
+            cursor="hand2", highlightbackground="#4b3a7a", highlightthickness=1,
+        )
+        self.login_btn.pack(side="left", fill="x", expand=True)
+        self.clear_login_btn = tk.Button(
+            login_row, text="清除登录", command=self._clear_login, bg="#1a2030",
+            fg="#8f9aae", activebackground="#242c3f", activeforeground=FG,
+            relief="flat", bd=0, font=(FONT, 9), padx=8, pady=5, cursor="hand2",
+        )
+        self.clear_login_btn.pack(side="left", padx=(5, 0))
+
         # 2x2 指标
         metrics = tk.Frame(parent, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
         metrics.pack(fill="x", pady=(0, 8))
@@ -430,40 +454,20 @@ class AuroraApp:
         bar = tk.Frame(self.root, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
         bar.pack(side="bottom", fill="x", padx=14, pady=(0, 8))
         row = tk.Frame(bar, bg=CARD)
-        row.pack(fill="x", padx=10, pady=(5, 2))
-        tk.Label(row, text="Cookie", bg=CARD, fg=MUTED, font=(FONT, 9, "bold")).pack(side="left")
+        row.pack(fill="x", padx=10, pady=6)
         self.cookie_var = tk.StringVar()
-        wrap = tk.Frame(row, bg=BORDER)
-        wrap.pack(side="left", fill="x", expand=True, padx=(7, 7))
-        self.cookie_entry = tk.Entry(
-            wrap, textvariable=self.cookie_var, bg=FIELD, fg=FG, insertbackground=FG,
-            relief="flat", font=(FONT, 9), show="•",
-        )
-        self.cookie_entry.pack(fill="x", ipady=3, padx=1, pady=1)
-        for text, command in (
-            ("读取", self._load_cookie_file),
-            ("保存", self._save_cookie_file),
-            ("清除", self._clear_cookie),
-        ):
-            tk.Button(
-                row, text=text, command=command, bg="#1a2030", fg="#b8c3d6",
-                activebackground="#222a3c", activeforeground=FG, relief="flat", bd=0,
-                font=(FONT, 9), padx=8, pady=3, cursor="hand2",
-            ).pack(side="left", padx=(3, 0))
-        self.cookie_hint_var = tk.StringVar(value="未填 Cookie：只能收弹幕")
+        self.cookie_hint_var = tk.StringVar(value="未登录抖音：只能收弹幕")
         tk.Label(
-            row, textvariable=self.cookie_hint_var, bg=CARD, fg="#778399", font=(FONT, 9)
-        ).pack(side="left", padx=(8, 0))
-
-        bottom = tk.Frame(bar, bg=CARD)
-        bottom.pack(fill="x", padx=10, pady=(0, 5))
+            row, textvariable=self.cookie_hint_var, bg=CARD, fg="#8b96a8",
+            font=(FONT, 10),
+        ).pack(side="left")
         self.hint_var = tk.StringVar(value="等待连接")
         tk.Label(
-            bottom, textvariable=self.hint_var, bg=CARD, fg="#778399", font=(FONT, 9)
-        ).pack(side="left")
+            row, textvariable=self.hint_var, bg=CARD, fg="#657187", font=(FONT, 9)
+        ).pack(side="left", padx=(14, 0))
         self.csv_var = tk.StringVar(value="")
         tk.Label(
-            bottom, textvariable=self.csv_var, bg=CARD, fg="#596579", font=(FONT, 8)
+            row, textvariable=self.csv_var, bg=CARD, fg="#596579", font=(FONT, 8)
         ).pack(side="right")
 
         if (app_dir() / "cookie.txt").exists():
@@ -758,22 +762,98 @@ class AuroraApp:
         if cookie.lower().startswith("cookie:"):
             cookie = cookie[7:].strip()
         self.cookie_var.set(cookie)
-        self.cookie_hint_var.set("已读取 cookie.txt（仅本机）" if cookie else "cookie.txt 是空的")
+        self.cookie_hint_var.set(
+            "已登录抖音：礼物消息可用" if cookie else "未登录抖音：只能收弹幕"
+        )
 
     def _clear_cookie(self):
         self.cookie_var.set("")
-        self.cookie_hint_var.set("未填 Cookie：只能收弹幕")
+        self.cookie_hint_var.set("未登录抖音：只能收弹幕")
 
     def _save_cookie_file(self):
         cookie = self.cookie_var.get().strip()
         if not cookie:
-            messagebox.showinfo("Cookie", "Cookie 输入框是空的，没有保存。")
+            messagebox.showinfo("Cookie", "Cookie 是空的，没有保存。")
             return
         try:
             (app_dir() / "cookie.txt").write_text(cookie, encoding="utf-8")
             self.cookie_hint_var.set("已保存到 cookie.txt（明文，仅本机）")
         except Exception as exc:
             messagebox.showerror("Cookie", f"保存失败：{exc}")
+
+    def _login_douyin(self):
+        if self.login_thread is not None and self.login_thread.is_alive():
+            return
+        self.login_cancel = threading.Event()
+        self.login_btn.configure(state="disabled", text="登录中…")
+        self.clear_login_btn.configure(state="disabled")
+        self.connect_btn.configure(state="disabled")
+        self.cookie_hint_var.set("正在打开登录窗口…")
+        self.hint_var.set("请在弹出的 Edge 窗口扫码登录")
+        self.login_thread = threading.Thread(target=self._login_worker, daemon=True)
+        self.login_thread.start()
+
+    def _login_worker(self):
+        profile = app_dir() / "login_profile"
+        try:
+            cookie = login_and_get_cookie(
+                profile,
+                status_cb=lambda text: self.events.put(
+                    {"kind": "login_status", "text": text}
+                ),
+                cancel_event=self.login_cancel,
+            )
+        except BrowserLoginCancelled as exc:
+            self.events.put({"kind": "login_error", "text": str(exc)})
+        except BrowserLoginError as exc:
+            self.events.put({"kind": "login_error", "text": str(exc)})
+        except Exception as exc:
+            self.events.put({"kind": "login_error", "text": f"登录失败：{exc}"})
+        else:
+            self.events.put({"kind": "login_done", "cookie": cookie})
+
+    def _handle_login_event(self, event: dict):
+        kind = event.get("kind")
+        if kind == "login_status":
+            self.cookie_hint_var.set(event.get("text") or "")
+            return
+        self.login_btn.configure(state="normal")
+        self.clear_login_btn.configure(state="normal")
+        self.connect_btn.configure(state="normal")
+        if kind == "login_done":
+            cookie = (event.get("cookie") or "").strip()
+            try:
+                (app_dir() / "cookie.txt").write_text(cookie, encoding="utf-8")
+            except Exception as exc:
+                messagebox.showerror("登录", f"Cookie 写入失败：{exc}")
+                self.login_btn.configure(text="登录抖音")
+                self.cookie_hint_var.set("登录成功，但 Cookie 保存失败")
+                return
+            self.cookie_var.set(cookie)
+            self.login_btn.configure(text="重新登录")
+            self.cookie_hint_var.set("已登录抖音：礼物消息可用")
+            self.hint_var.set("登录成功，可以连接直播间")
+            self._set_status("登录成功", GREEN)
+        else:
+            self.login_btn.configure(text="登录抖音")
+            self.cookie_hint_var.set(event.get("text") or "登录失败，请重试")
+            self._set_status("登录失败", RED)
+
+    def _clear_login(self):
+        if not messagebox.askyesno(
+            "清除登录",
+            "会删除本机保存的 cookie.txt 和独立 Edge 登录配置，确定吗？",
+        ):
+            return
+        self._clear_cookie()
+        try:
+            (app_dir() / "cookie.txt").unlink(missing_ok=True)
+        except Exception:
+            pass
+        clear_login_profile(app_dir() / "login_profile")
+        self.login_btn.configure(text="登录抖音")
+        self.hint_var.set("已清除登录，下次连接生效")
+        self._set_status("未登录", MUTED)
 
     # ------------------------------------------------------------------
     # 顶部指标
@@ -1181,9 +1261,9 @@ class AuroraApp:
         self.disconnect_btn.configure(state="normal", fg=FG)
         self.hint_var.set(f"直播间 {live_id} · 连接中…")
         if cookie:
-            self.cookie_hint_var.set("已填 Cookie：尝试接收礼物消息")
+            self.cookie_hint_var.set("已登录抖音：尝试接收礼物消息")
         else:
-            self.cookie_hint_var.set("未填 Cookie：只能收弹幕")
+            self.cookie_hint_var.set("未登录抖音：只能收弹幕")
         self.csv_var.set("")
         self._set_status("连接中…", GOLD)
 
@@ -1207,6 +1287,8 @@ class AuroraApp:
             self._set_status("已断开", MUTED)
 
     def on_close(self):
+        if self.login_cancel is not None:
+            self.login_cancel.set()
         try:
             if self.client is not None and self.total_events > 0:
                 self.export_site(open_browser=False, quiet=True)
@@ -1325,7 +1407,10 @@ class AuroraApp:
                 break
             processed += 1
             try:
-                self._handle(event)
+                if event.get("kind") in ("login_status", "login_done", "login_error"):
+                    self._handle_login_event(event)
+                else:
+                    self._handle(event)
             except Exception:
                 pass
         self.root.after(100, self.drain_events)

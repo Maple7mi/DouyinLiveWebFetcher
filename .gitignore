@@ -15,5 +15,6 @@ site/
 site_*/
 tmp_test*
 cookie.txt
+login_profile/
 tmp_*
 ~$*
