@@ -11,6 +11,8 @@ package-lock.json
 .DS_Store
 *.pyc
 logs/
+site/
+site_*/
 tmp_test*
 cookie.txt
 tmp_*

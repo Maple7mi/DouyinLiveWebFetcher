@@ -24,14 +24,12 @@ import threading
 import time
 import tkinter as tk
 import traceback
+import webbrowser
 from datetime import datetime
-from io import BytesIO
 from pathlib import Path
 from tkinter import messagebox, ttk
 
-import requests
 import websocket
-from PIL import Image, ImageTk
 
 from collect import parse_live_id
 from liveMan import DouyinLiveWebFetcher
@@ -63,7 +61,6 @@ GREEN = "#2dd4a7"
 YELLOW = "#f5c451"
 BLUE = "#5aa9ff"
 FONT = "Microsoft YaHei UI"
-GIFT_ICON_SIZE = 30
 
 
 def app_dir() -> Path:
@@ -157,6 +154,8 @@ class DanmakuClient(DouyinLiveWebFetcher):
                 "gift_name",
                 "gift_count",
                 "diamonds",
+                "group_id",
+                "visible",
             ]
         )
         self._csv_file.flush()
@@ -207,6 +206,8 @@ class DanmakuClient(DouyinLiveWebFetcher):
                     data.get("gift_name", ""),
                     data.get("gift_count", ""),
                     data.get("diamonds", ""),
+                    data.get("group_id", ""),
+                    data.get("visible", ""),
                 ]
             )
             self._csv_file.flush()
@@ -412,15 +413,6 @@ class DanmakuClient(DouyinLiveWebFetcher):
         group = int(message.group_id or 0)
         total_count = int(message.total_count or 0)
         unit = int(gift.diamond_count or 0)
-        icon_url = ""
-        try:
-            for image in (gift.image, gift.icon):
-                urls = list(getattr(image, "url_list_list", []) or [])
-                if urls:
-                    icon_url = str(urls[0])
-                    break
-        except Exception:
-            icon_url = ""
 
         # 原始礼物消息留档，便于核对连击计数语义
         if self._gift_raw:
@@ -432,7 +424,6 @@ class DanmakuClient(DouyinLiveWebFetcher):
                             "msg_id": msg_id,
                             "gift_id": str(gift.id),
                             "gift_name": gift.name,
-                            "icon_url": icon_url,
                             "unit_diamond": unit,
                             "repeat_count": repeat,
                             "combo_count": combo,
@@ -474,26 +465,30 @@ class DanmakuClient(DouyinLiveWebFetcher):
         self._gift_diamonds += diamonds
         self._msg_count += 1
 
+        # 所有礼物都写入 CSV（含未达到 >90 钻展示门槛的），
+        # 供网页版按天汇总礼物榜；界面仍然只展示 >90 钻的整组礼物。
+        data = dict(
+            msg_id=msg_id,
+            user_id=uid,
+            nickname=user.nick_name,
+            fans_club_level=level,
+            pay_level=pay_level,
+            content=gift.name,
+            gift_name=gift.name,
+            gift_count=group_total,
+            diamonds=total_diamonds,
+            group_id=str(group) if group else "",
+            visible=1 if total_diamonds > 90 else 0,
+            group_key=str(group) if group else msg_id,
+        )
+        self._write_csv("gift", **data)
+
         # 连击的 repeat_count 是累计值：界面按整组累计总价判断，
         # 例如 100 个 1 钻小心心，不应被拆成 10 个 10 钻而过滤掉。
         already = self._gift_group_emitted.get(group, -1) if group else -1
         if total_diamonds > 90 and group_total != already:
             self._gift_group_emitted[group] = group_total if group else total_diamonds
-            data = dict(
-                msg_id=msg_id,
-                user_id=uid,
-                nickname=user.nick_name,
-                fans_club_level=level,
-                pay_level=pay_level,
-                content=gift.name,
-                gift_name=gift.name,
-                gift_count=group_total,
-                diamonds=total_diamonds,
-                icon_url=icon_url,
-                group_key=str(group) if group else msg_id,
-            )
             self._emit("gift", **data)
-            self._write_csv("gift", **data)
         if message.repeat_end and group:
             self._gift_group_total.pop(group, None)
             self._gift_group_emitted.pop(group, None)
@@ -555,9 +550,6 @@ class DanmakuApp:
         self.entry_count = 0
         self.gift_count = 0
         self.gift_rows: dict[str, dict] = {}
-        self._gift_icons: dict[str, ImageTk.PhotoImage] = {}
-        self._gift_icon_pending: set[str] = set()
-        self._gift_icon_failed: set[str] = set()
 
         self._setup_style()
         self._build_topbar()
@@ -706,6 +698,38 @@ class DanmakuApp:
             state="disabled",
         )
         self.disconnect_btn.pack(side="left")
+        self.export_btn = tk.Button(
+            controls,
+            text="导出网站",
+            command=self.export_site,
+            bg=CARD,
+            fg=BLUE,
+            activebackground=BORDER,
+            activeforeground=FG,
+            relief="flat",
+            bd=0,
+            font=(FONT, 9),
+            padx=12,
+            pady=9,
+            cursor="hand2",
+        )
+        self.export_btn.pack(side="left", padx=(6, 0))
+
+    def export_site(self):
+        """把 logs 里的所有消息生成按日期分类的静态网站。"""
+        try:
+            import site_builder
+
+            out = app_dir() / "site"
+            data = site_builder.load_messages_from_logs(app_dir() / "logs")
+            if not data:
+                messagebox.showinfo("导出网站", "还没有可导出的日志")
+                return
+            site_builder.build_site(data, out, title="抖音弹幕归档")
+            webbrowser.open((out / "index.html").as_uri())
+            messagebox.showinfo("导出网站", f"已导出 {len(data)} 条消息到：\n{out}")
+        except Exception as exc:
+            messagebox.showerror("导出网站失败", str(exc))
 
     # -- Cookie -----------------------------------------------------------
     def _build_cookiebar(self):
@@ -879,7 +903,7 @@ class DanmakuApp:
         self.entry_tree.tag_configure("even", background=CARD_ALT)
 
         self.gift_card, gift_body, self.gift_badge = self._make_card(
-            body, "礼物", "整组累计 >90 钻；总额/付费人数统计全部礼物"
+            body, "礼物", "整组累计 >90 钻；显示 ID / 名称 / 数量 / 钻石"
         )
         self.gift_card.grid(row=1, column=1, sticky="nsew")
         self._build_gift_list(gift_body)
@@ -978,126 +1002,61 @@ class DanmakuApp:
     def _add_gift_row(self, event):
         bg = CARD if self.gift_count % 2 == 0 else CARD_ALT
         row = tk.Frame(self.gift_inner, bg=bg)
-        row.pack(fill="x", padx=2, pady=1)
-        prefix = tk.Label(
-            row, text="送出了", bg=bg, fg=MUTED, font=(FONT, 9)
-        )
-        prefix.pack(side="left")
-        icon = tk.Label(
+        row.pack(fill="x", padx=2, pady=2)
+        uid = tk.Label(
             row,
-            text="…",
+            text=f"ID {event.get('user_id', '')}",
             bg=bg,
-            fg=MUTED,
-            font=(FONT, 8),
-            width=3,
-            anchor="center",
+            fg=BLUE,
+            font=(FONT, 10, "bold"),
+            anchor="w",
         )
-        icon.pack(side="left", padx=(3, 4))
+        uid.pack(side="left")
         name = tk.Label(
             row,
             text=event.get("gift_name", ""),
             bg=bg,
             fg=FG,
-            font=(FONT, 9, "bold"),
+            font=(FONT, 11, "bold"),
             anchor="w",
         )
-        name.pack(side="left")
+        name.pack(side="left", padx=(10, 0))
         count = tk.Label(
             row,
             text=f"× {event.get('gift_count', 1)}",
             bg=bg,
             fg=ACCENT_DIM,
-            font=(FONT, 9, "bold"),
+            font=(FONT, 10, "bold"),
             anchor="w",
         )
-        count.pack(side="left", padx=(6, 0))
-        detail = tk.Label(
+        count.pack(side="left", padx=(8, 0))
+        diamonds = tk.Label(
             row,
-            text=self._gift_detail(event),
+            text=f"{fmt_int(event.get('diamonds', 0))} 钻",
             bg=bg,
-            fg=MUTED,
-            font=(FONT, 8),
+            fg=YELLOW,
+            font=(FONT, 10, "bold"),
             anchor="e",
         )
-        detail.pack(side="right", padx=(8, 2))
-        for widget in (row, prefix, icon, name, count, detail):
+        diamonds.pack(side="right", padx=(8, 4))
+        for widget in (row, uid, name, count, diamonds):
             widget.bind("<MouseWheel>", self._on_gift_wheel)
-        info = {
+        return {
             "frame": row,
-            "icon": icon,
+            "uid": uid,
             "name": name,
             "count": count,
-            "detail": detail,
+            "diamonds": diamonds,
         }
-        return info
-
-    def _gift_detail(self, event):
-        nickname = event.get("nickname") or ""
-        diamonds = fmt_int(event.get("diamonds", 0))
-        level = int(event.get("fans_club_level") or 0)
-        level_text = f"Lv.{level} · " if level else ""
-        return f"{level_text}{nickname} · {diamonds} 钻"
 
     def _update_gift_row(self, info, event):
+        info["uid"].configure(text=f"ID {event.get('user_id', '')}")
         info["name"].configure(text=event.get("gift_name", ""))
         info["count"].configure(text=f"× {event.get('gift_count', 1)}")
-        info["detail"].configure(text=self._gift_detail(event))
+        info["diamonds"].configure(text=f"{fmt_int(event.get('diamonds', 0))} 钻")
         # 同一组更新后移到底部，保持最新礼物可见
         info["frame"].pack_forget()
-        info["frame"].pack(fill="x", padx=2, pady=1)
-
-    def _ensure_gift_icon(self, key: str, url: str):
-        if not key or not url:
-            return
-        if (
-            key in self._gift_icons
-            or key in self._gift_icon_pending
-            or key in self._gift_icon_failed
-        ):
-            return
-        self._gift_icon_pending.add(key)
-        threading.Thread(
-            target=self._download_gift_icon,
-            args=(key, url),
-            daemon=True,
-        ).start()
-
-    def _download_gift_icon(self, key: str, url: str):
-        try:
-            response = requests.get(
-                url,
-                timeout=8,
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
-                    ),
-                    "Referer": "https://live.douyin.com/",
-                },
-            )
-            response.raise_for_status()
-            if response.content:
-                self.events.put(
-                    {"kind": "gift_icon", "key": key, "data": response.content}
-                )
-        except Exception:
-            self._gift_icon_failed.add(key)
-        finally:
-            self._gift_icon_pending.discard(key)
-
-    def _apply_gift_icon(self, key: str, data: bytes):
-        if not key or not data or key in self._gift_icons:
-            return
-        try:
-            image = Image.open(BytesIO(data)).convert("RGBA")
-            image.thumbnail((GIFT_ICON_SIZE, GIFT_ICON_SIZE), Image.LANCZOS)
-            photo = ImageTk.PhotoImage(image)
-        except Exception:
-            return
-        self._gift_icons[key] = photo
-        info = self.gift_rows.get(key)
-        if info:
-            info["icon"].configure(image=photo, text="")
+        info["frame"].pack(fill="x", padx=2, pady=2)
 
     def _scroll_gift_bottom(self):
         try:
@@ -1243,9 +1202,6 @@ class DanmakuApp:
             child.destroy()
         self.chat_count = self.entry_count = self.gift_count = 0
         self.gift_rows.clear()
-        self._gift_icons.clear()
-        self._gift_icon_pending.clear()
-        self._gift_icon_failed.clear()
         self.chat_badge.configure(text="0")
         self.entry_badge.configure(text="0")
         self.gift_badge.configure(text="0")
@@ -1316,13 +1272,6 @@ class DanmakuApp:
                 self.gift_count += 1
                 self.gift_badge.configure(text=fmt_int(self.gift_count))
                 self._scroll_gift_bottom()
-            icon_url = str(event.get("icon_url") or "")
-            if icon_url:
-                self._ensure_gift_icon(key, icon_url)
-        elif kind == "gift_icon":
-            self._apply_gift_icon(
-                str(event.get("key") or ""), event.get("data") or b""
-            )
         elif kind == "summary":
             online = event.get("online")
             if online:
@@ -1433,6 +1382,18 @@ def main():
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
     except Exception:
         pass
+    if "--export-site" in sys.argv:
+        # 供无人值守自检：直接导出 logs 到 site/，不启动窗口。
+        import site_builder
+
+        rows = site_builder.load_messages_from_logs(app_dir() / "logs")
+        if not rows:
+            print("EXPORT_SITE_EMPTY")
+            return
+        out = app_dir() / "site"
+        site_builder.build_site(rows, out, title="抖音弹幕归档")
+        print(f"EXPORT_SITE_OK {len(rows)} {out}")
+        return
     root = tk.Tk()
     app = DanmakuApp(root)
     # 可选：--room <链接或房间号> 指定默认直播间；--auto-connect 启动后自动连接。
