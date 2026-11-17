@@ -1,6 +1,9 @@
 node_modules/
 __pycache__/
 dist/
+build/
+release/
+*.spec
 package.json
 package-lock.json
 .idea

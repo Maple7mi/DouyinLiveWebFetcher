@@ -17,10 +17,13 @@ from __future__ import annotations
 import csv
 import gzip
 import json
+import os
 import queue
+import sys
 import threading
 import time
 import tkinter as tk
+import traceback
 from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox, ttk
@@ -57,6 +60,13 @@ GREEN = "#2dd4a7"
 YELLOW = "#f5c451"
 BLUE = "#5aa9ff"
 FONT = "Microsoft YaHei UI"
+
+
+def app_dir() -> Path:
+    """可写文件（cookie/logs）放在 exe 或源码目录旁边。"""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
 
 
 def ts_now() -> str:
@@ -122,7 +132,7 @@ class DanmakuClient(DouyinLiveWebFetcher):
                 pass
 
     def _open_logs(self):
-        logs = Path("logs")
+        logs = app_dir() / "logs"
         logs.mkdir(exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.csv_path = logs / f"gui_{self.live_id}_{stamp}.csv"
@@ -156,9 +166,21 @@ class DanmakuClient(DouyinLiveWebFetcher):
                 pass
 
     # -- 工具 -------------------------------------------------------------
+    def _debug(self, text: str):
+        if not os.environ.get("DANMAKU_DEBUG"):
+            return
+        try:
+            path = app_dir() / "logs" / "debug.log"
+            path.parent.mkdir(exist_ok=True)
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {text}\n")
+        except Exception:
+            pass
+
     def _emit(self, kind: str, **data):
         data["kind"] = kind
         data["ts"] = ts_now()
+        self._debug(f"EVENT {data}")
         self.events.put(data)
 
     def _write_csv(self, kind: str, **data):
@@ -230,6 +252,7 @@ class DanmakuClient(DouyinLiveWebFetcher):
             package = PushFrame().parse(message)
             response = Response().parse(gzip.decompress(package.payload))
         except Exception as exc:
+            self._debug("PARSE " + traceback.format_exc())
             self._emit("error", text=f"数据解包失败：{exc}")
             return
 
@@ -727,11 +750,11 @@ class DanmakuApp:
         ).pack(side="left", padx=(8, 0))
 
         # 如果本机已有 cookie.txt，自动读取，省得每次粘贴。
-        if Path("cookie.txt").exists():
+        if (app_dir() / "cookie.txt").exists():
             self._load_cookie_file(silent=True)
 
     def _load_cookie_file(self, silent: bool = False):
-        path = Path("cookie.txt")
+        path = app_dir() / "cookie.txt"
         if not path.exists():
             if not silent:
                 messagebox.showinfo(
@@ -762,7 +785,7 @@ class DanmakuApp:
             messagebox.showinfo("Cookie", "Cookie 输入框是空的，没有保存。")
             return
         try:
-            Path("cookie.txt").write_text(cookie, encoding="utf-8")
+            (app_dir() / "cookie.txt").write_text(cookie, encoding="utf-8")
             self.cookie_hint_var.set("已保存到 cookie.txt（明文，仅本机）")
         except Exception as exc:
             messagebox.showerror("Cookie", f"保存失败：{exc}")
@@ -1164,6 +1187,33 @@ class DanmakuApp:
 
 
 def main():
+    # PyInstaller --windowed 下 sys.stdout/stderr 为 None，print() 会报错；
+    # 改用 console 子系统并隐藏控制台，既保留标准流又让用户看不到黑框。
+    if getattr(sys, "frozen", False):
+        try:
+            import ctypes
+
+            hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+            if hwnd:
+                ctypes.windll.user32.ShowWindow(hwnd, 0)
+        except Exception:
+            pass
+    if getattr(sys, "frozen", False):
+        try:
+            log_dir = app_dir() / "logs"
+            log_dir.mkdir(exist_ok=True)
+            sys.stdout = open(log_dir / "stdout.log", "a", encoding="utf-8", buffering=1)
+            sys.stderr = open(log_dir / "stderr.log", "a", encoding="utf-8", buffering=1)
+
+            def _hook(exc_type, exc_value, exc_tb):
+                traceback.print_exception(exc_type, exc_value, exc_tb)
+
+            sys.excepthook = _hook
+            threading.excepthook = lambda args: _hook(
+                args.exc_type, args.exc_value, args.exc_traceback
+            )
+        except Exception:
+            pass
     try:
         import ctypes
 
@@ -1172,6 +1222,17 @@ def main():
         pass
     root = tk.Tk()
     app = DanmakuApp(root)
+    # 可选：--room <链接或房间号> 指定默认直播间；--auto-connect 启动后自动连接。
+    room_arg = None
+    for index, arg in enumerate(sys.argv):
+        if arg == "--room" and index + 1 < len(sys.argv):
+            room_arg = sys.argv[index + 1]
+        elif arg.startswith("--room="):
+            room_arg = arg.split("=", 1)[1]
+    if room_arg:
+        app.room_var.set(room_arg)
+    if "--auto-connect" in sys.argv:
+        root.after(900, app.connect)
     # 保留引用，避免被回收
     root._app = app
     root.mainloop()

@@ -9,10 +9,13 @@
 import codecs
 import gzip
 import hashlib
+import os
 import random
 import re
+import shutil
 import string
 import subprocess
+import sys
 import threading
 import time
 import execjs
@@ -28,6 +31,40 @@ from ac_signature import get__ac_signature
 from protobuf.douyin import *
 
 from urllib3.util.url import parse_url
+
+
+def resource_path(name: str) -> str:
+    """返回打包后仍可访问的资源路径（PyInstaller onefile/onedir 兼容）。"""
+    base = getattr(sys, '_MEIPASS', None) or os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, name)
+
+
+def _prepare_mini_racer_runtime() -> str | None:
+    """把 V8 运行库复制到纯 ASCII 路径。
+
+    py_mini_racer 在 Windows 上加载原生 DLL 时，如果 exe 所在路径含中文，
+    会在 V8 初始化阶段直接崩溃（0x80000003）。复制到 C:\\Users\\Public
+    下的 ASCII 目录再加载，可避开这个问题。
+    """
+    if not getattr(sys, 'frozen', False):
+        return None
+    src_dir = getattr(sys, '_MEIPASS', None)
+    if not src_dir:
+        return None
+    public = os.environ.get('PUBLIC') or r'C:\Users\Public'
+    dst_dir = os.path.join(public, 'DouyinDanmaku', 'runtime')
+    try:
+        os.makedirs(dst_dir, exist_ok=True)
+        for name in ('mini_racer.dll', 'icudtl.dat', 'snapshot_blob.bin'):
+            src = os.path.join(src_dir, name)
+            dst = os.path.join(dst_dir, name)
+            if not os.path.exists(src):
+                return None
+            if not os.path.exists(dst) or os.path.getsize(dst) != os.path.getsize(src):
+                shutil.copy2(src, dst)
+        return dst_dir
+    except Exception:
+        return None
 
 
 def execute_js(js_file: str):
@@ -59,6 +96,8 @@ def generateSignature(wss, script_file='sign.js'):
     """
     出现gbk编码问题则修改 python模块subprocess.py的源码中Popen类的__init__函数参数encoding值为 "utf-8"
     """
+    if script_file and not os.path.isabs(script_file) and not os.path.exists(script_file):
+        script_file = resource_path(script_file)
     params = ("live_id,aid,version_code,webcast_sdk_version,"
               "room_id,sub_room_id,sub_channel_id,did_rule,"
               "user_unique_id,device_platform,device_type,ac,"
@@ -74,7 +113,20 @@ def generateSignature(wss, script_file='sign.js'):
     with codecs.open(script_file, 'r', encoding='utf8') as f:
         script = f.read()
     
-    ctx = MiniRacer()
+    old_meipass = getattr(sys, '_MEIPASS', None)
+    runtime_dir = _prepare_mini_racer_runtime()
+    try:
+        if runtime_dir:
+            sys._MEIPASS = runtime_dir
+        ctx = MiniRacer()
+    finally:
+        if old_meipass is None:
+            try:
+                del sys._MEIPASS
+            except AttributeError:
+                pass
+        else:
+            sys._MEIPASS = old_meipass
     ctx.eval(script)
     
     try:
@@ -115,6 +167,8 @@ class DouyinLiveWebFetcher:
                        游客身份只能收到弹幕/进场等消息。
         """
         self.abogus_file = abogus_file
+        if self.abogus_file and not os.path.isabs(self.abogus_file) and not os.path.exists(self.abogus_file):
+            self.abogus_file = resource_path(self.abogus_file)
         raw_cookie = (cookie or '').strip().replace('\r', '').replace('\n', '')
         if raw_cookie.lower().startswith('cookie:'):
             raw_cookie = raw_cookie.split(':', 1)[1].strip()
