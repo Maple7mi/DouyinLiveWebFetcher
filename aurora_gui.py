@@ -96,6 +96,7 @@ class AuroraApp:
         self.gift_rows: dict[str, dict] = {}
         self.gift_order: list[str] = []
         self.chat_rows: list[dict] = []
+        self._chat_scroll_pending = False
         self._pv_text = ""
         self._online_text = "--"
         self._last_auto_export_events = -1
@@ -394,7 +395,7 @@ class AuroraApp:
         gift_body = tk.Frame(gift_card, bg=CARD)
         gift_body.pack(fill="x", padx=8, pady=(0, 8))
         self.gift_canvas = tk.Canvas(
-            gift_body, bg=CARD, height=280, highlightthickness=0, borderwidth=0, yscrollincrement=30
+            gift_body, bg=CARD, height=240, highlightthickness=0, borderwidth=0, yscrollincrement=30
         )
         self.gift_scroll = tk.Scrollbar(
             gift_body, orient="vertical", command=self.gift_canvas.yview, width=9,
@@ -529,13 +530,23 @@ class AuroraApp:
             widget.bind("<Double-1>", lambda _e, t=content: self._copy_chat(text=t))
             widget.bind("<MouseWheel>", self._on_chat_wheel, add="+")
 
-        while len(self.chat_rows) > 500:
+        while len(self.chat_rows) > 250:
             old = self.chat_rows.pop(0)
             old["frame"].destroy()
 
         self.chat_count += 1
         self.chat_badge.configure(text=fmt_int(self.chat_count))
         self._hide_chat_placeholder()
+        self._schedule_chat_scroll()
+
+    def _schedule_chat_scroll(self):
+        if self._chat_scroll_pending:
+            return
+        self._chat_scroll_pending = True
+        self.root.after(120, self._scroll_chat_to_bottom)
+
+    def _scroll_chat_to_bottom(self):
+        self._chat_scroll_pending = False
         self.chat_canvas.update_idletasks()
         self._sync_chat_scroll()
         self.chat_canvas.yview_moveto(1.0)
@@ -1045,7 +1056,7 @@ class AuroraApp:
             text="",
             bg=bg,
             fg="#f2f5ff",
-            font=(FONT, 14, "bold"),
+            font=(FONT, 15, "bold"),
             anchor="w",
             width=7,
         )
@@ -1057,7 +1068,7 @@ class AuroraApp:
             text="",
             bg=bg,
             fg="#ff9cc5",
-            font=(FONT, 17, "bold"),
+            font=(FONT, 15, "bold"),
             anchor="w",
             width=10,
         )
@@ -1067,7 +1078,7 @@ class AuroraApp:
             text="",
             bg=bg,
             fg=GOLD,
-            font=(FONT, 17, "bold"),
+            font=(FONT, 15, "bold"),
             anchor="e",
             padx=0,
         )
@@ -1307,7 +1318,7 @@ class AuroraApp:
     # ------------------------------------------------------------------
     def drain_events(self):
         processed = 0
-        while processed < 300:
+        while processed < 80:
             try:
                 event = self.events.get_nowait()
             except queue.Empty:
