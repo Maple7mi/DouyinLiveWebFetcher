@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
-"""抖音直播弹幕姬（Tkinter 桌面窗口）。
+"""弹幕助手（Tkinter 桌面窗口）。
 
 四个分区：
 1. 弹幕：全部聊天，含消费等级、粉丝团灯牌等级、昵称、内容；
@@ -49,18 +49,19 @@ from protobuf.douyin import (
 # ---------------------------------------------------------------------------
 # 主题
 # ---------------------------------------------------------------------------
-BG = "#0b0e14"
-CARD = "#141922"
-CARD_ALT = "#11161e"
-BORDER = "#242b38"
-FG = "#e8edf5"
-MUTED = "#8b96a8"
+BG = "#f2f5f9"
+CARD = "#ffffff"
+CARD_ALT = "#f7f9fc"
+BORDER = "#dfe5ee"
+FG = "#18202c"
+MUTED = "#687386"
 ACCENT = "#ff2c55"
-ACCENT_DIM = "#ff5f7d"
-GREEN = "#2dd4a7"
-YELLOW = "#f5c451"
-BLUE = "#5aa9ff"
+ACCENT_DIM = "#e04a63"
+GREEN = "#0f8a68"
+YELLOW = "#b26a00"
+BLUE = "#2563c9"
 FONT = "Microsoft YaHei UI"
+APP_NAME = "弹幕助手"
 
 
 def app_dir() -> Path:
@@ -538,9 +539,9 @@ class DanmakuClient(DouyinLiveWebFetcher):
 class DanmakuApp:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("抖音弹幕姬 · 实时弹幕 / 入场 / 礼物 / 直播总结")
-        self.root.geometry("1320x860")
-        self.root.minsize(1120, 720)
+        self.root.title(f"{APP_NAME} · 实时弹幕 / 入场 / 礼物 / 直播总结")
+        self.root.geometry("1600x1000")
+        self.root.minsize(1280, 800)
         self.root.configure(bg=BG)
 
         self.events: queue.Queue = queue.Queue()
@@ -569,66 +570,90 @@ class DanmakuApp:
         except Exception:
             pass
         style.configure(
-            "Dark.Treeview",
+            "Light.Treeview",
             background=CARD,
             fieldbackground=CARD,
             foreground=FG,
             borderwidth=0,
-            rowheight=28,
-            font=(FONT, 9),
+            rowheight=36,
+            font=(FONT, 10),
         )
         style.configure(
-            "Dark.Treeview.Heading",
-            background="#1c222d",
-            foreground=MUTED,
+            "Light.Treeview.Heading",
+            background="#edf2f8",
+            foreground="#4b5565",
             borderwidth=0,
             relief="flat",
-            font=(FONT, 9, "bold"),
-            padding=(6, 6),
+            font=(FONT, 10, "bold"),
+            padding=(7, 8),
         )
         style.map(
-            "Dark.Treeview",
-            background=[("selected", "#2b3446")],
-            foreground=[("selected", "#ffffff")],
+            "Light.Treeview",
+            background=[("selected", "#dbe8ff")],
+            foreground=[("selected", "#0b1f3a")],
         )
         style.map(
-            "Dark.Treeview.Heading",
-            background=[("active", "#232b38")],
+            "Light.Treeview.Heading",
+            background=[("active", "#e2e9f3")],
         )
         style.configure(
-            "Dark.Vertical.TScrollbar",
-            background="#232b38",
-            troughcolor=CARD,
-            bordercolor=CARD,
-            arrowcolor=MUTED,
+            "Light.Vertical.TScrollbar",
+            background="#cbd5e1",
+            darkcolor="#cbd5e1",
+            lightcolor="#cbd5e1",
+            troughcolor="#f4f7fb",
+            bordercolor="#f4f7fb",
+            arrowcolor="#64748b",
+            relief="flat",
+            borderwidth=0,
+        )
+        style.map(
+            "Light.Vertical.TScrollbar",
+            background=[("active", "#b6c2d1")],
         )
 
     # -- 顶部 -------------------------------------------------------------
     def _build_topbar(self):
-        bar = tk.Frame(self.root, bg=BG)
-        bar.pack(fill="x", padx=18, pady=(14, 8))
+        bar = tk.Frame(
+            self.root,
+            bg=CARD,
+            highlightbackground=BORDER,
+            highlightthickness=1,
+        )
+        bar.pack(fill="x", padx=18, pady=(14, 10))
 
-        brand = tk.Frame(bar, bg=BG)
-        brand.pack(side="left")
+        icon = tk.Label(
+            bar,
+            text="弹",
+            bg=ACCENT,
+            fg="#ffffff",
+            font=(FONT, 15, "bold"),
+            width=2,
+            height=1,
+        )
+        icon.pack(side="left", padx=(14, 10), pady=12)
+
+        brand = tk.Frame(bar, bg=CARD)
+        brand.pack(side="left", pady=10)
         tk.Label(
             brand,
-            text="抖音弹幕姬",
-            bg=BG,
+            text=APP_NAME,
+            bg=CARD,
             fg=FG,
-            font=(FONT, 18, "bold"),
+            font=(FONT, 19, "bold"),
         ).pack(anchor="w")
         tk.Label(
             brand,
             text="实时弹幕 · 粉丝团灯牌 · 礼物 · 直播总结",
-            bg=BG,
+            bg=CARD,
             fg=MUTED,
             font=(FONT, 9),
-        ).pack(anchor="w", pady=(2, 0))
+        ).pack(anchor="w", pady=(1, 0))
 
-        right = tk.Frame(bar, bg=BG)
-        right.pack(side="right")
+        right = tk.Frame(bar, bg=CARD)
+        right.pack(side="right", padx=(0, 14))
         self.status_dot = tk.Canvas(
-            right, width=10, height=10, bg=BG, highlightthickness=0
+            right, width=10, height=10, bg=CARD, highlightthickness=0
         )
         self.status_dot.pack(side="left", padx=(0, 6))
         self._dot = self.status_dot.create_oval(1, 1, 9, 9, fill=MUTED, outline="")
@@ -636,7 +661,7 @@ class DanmakuApp:
         tk.Label(
             right,
             textvariable=self.status_var,
-            bg=BG,
+            bg=CARD,
             fg=MUTED,
             font=(FONT, 9),
         ).pack(side="left")
@@ -644,25 +669,27 @@ class DanmakuApp:
         tk.Label(
             right,
             textvariable=self.online_top_var,
-            bg=BG,
+            bg=CARD,
             fg=GREEN,
             font=(FONT, 10, "bold"),
         ).pack(side="left", padx=(18, 0))
 
-        controls = tk.Frame(bar, bg=BG)
-        controls.pack(side="right", padx=(0, 28))
+        controls = tk.Frame(bar, bg=CARD)
+        controls.pack(side="right", padx=(0, 24))
         self.room_var = tk.StringVar(value="https://live.douyin.com/77217772750")
+        entry_border = tk.Frame(controls, bg=BORDER)
+        entry_border.pack(side="left", padx=(0, 8))
         entry = tk.Entry(
-            controls,
+            entry_border,
             textvariable=self.room_var,
-            bg=CARD,
+            bg=CARD_ALT,
             fg=FG,
             insertbackground=FG,
             relief="flat",
             font=(FONT, 10),
             width=40,
         )
-        entry.pack(side="left", ipady=8, padx=(0, 8))
+        entry.pack(ipady=8, padx=1, pady=1)
         entry.bind("<Return>", lambda _e: self.connect())
 
         self.connect_btn = tk.Button(
@@ -679,15 +706,16 @@ class DanmakuApp:
             padx=18,
             pady=8,
             cursor="hand2",
+            disabledforeground="#8a1f31",
         )
         self.connect_btn.pack(side="left", padx=(0, 6))
         self.disconnect_btn = tk.Button(
             controls,
             text="断开",
             command=self.disconnect,
-            bg=CARD,
+            bg="#f1f5f9",
             fg=MUTED,
-            activebackground=BORDER,
+            activebackground="#e2e8f0",
             activeforeground=FG,
             relief="flat",
             bd=0,
@@ -702,9 +730,9 @@ class DanmakuApp:
             controls,
             text="导出网站",
             command=self.export_site,
-            bg=CARD,
+            bg="#f1f5f9",
             fg=BLUE,
-            activebackground=BORDER,
+            activebackground="#e2e8f0",
             activeforeground=FG,
             relief="flat",
             bd=0,
@@ -733,27 +761,34 @@ class DanmakuApp:
 
     # -- Cookie -----------------------------------------------------------
     def _build_cookiebar(self):
-        bar = tk.Frame(self.root, bg=BG)
-        bar.pack(fill="x", padx=18, pady=(0, 4))
+        bar = tk.Frame(
+            self.root,
+            bg=CARD,
+            highlightbackground=BORDER,
+            highlightthickness=1,
+        )
+        bar.pack(fill="x", padx=18, pady=(0, 8))
 
         tk.Label(
             bar,
             text="Cookie",
-            bg=BG,
+            bg=CARD,
             fg=MUTED,
             font=(FONT, 9, "bold"),
-        ).pack(side="left")
+        ).pack(side="left", padx=(14, 0))
         tk.Label(
             bar,
             text="登录抖音网页版后复制；填了才能收到礼物消息",
-            bg=BG,
+            bg=CARD,
             fg="#6f7a8c",
             font=(FONT, 8),
         ).pack(side="left", padx=(6, 8))
 
         self.cookie_var = tk.StringVar()
+        entry_wrap = tk.Frame(bar, bg=BORDER)
+        entry_wrap.pack(side="left", fill="x", expand=True, pady=6)
         self.cookie_entry = tk.Entry(
-            bar,
+            entry_wrap,
             textvariable=self.cookie_var,
             bg=CARD_ALT,
             fg=FG,
@@ -762,15 +797,15 @@ class DanmakuApp:
             font=(FONT, 9),
             show="•",
         )
-        self.cookie_entry.pack(side="left", fill="x", expand=True, ipady=5)
+        self.cookie_entry.pack(fill="x", ipady=5, padx=1, pady=1)
 
         tk.Button(
             bar,
             text="读取 cookie.txt",
             command=self._load_cookie_file,
-            bg=CARD,
+            bg="#f1f5f9",
             fg=MUTED,
-            activebackground=BORDER,
+            activebackground="#e2e8f0",
             activeforeground=FG,
             relief="flat",
             bd=0,
@@ -778,14 +813,14 @@ class DanmakuApp:
             padx=10,
             pady=4,
             cursor="hand2",
-        ).pack(side="left", padx=(6, 4))
+        ).pack(side="left", padx=(6, 4), pady=6)
         tk.Button(
             bar,
             text="保存",
             command=self._save_cookie_file,
-            bg=CARD,
+            bg="#f1f5f9",
             fg=MUTED,
-            activebackground=BORDER,
+            activebackground="#e2e8f0",
             activeforeground=FG,
             relief="flat",
             bd=0,
@@ -793,14 +828,14 @@ class DanmakuApp:
             padx=10,
             pady=4,
             cursor="hand2",
-        ).pack(side="left", padx=(0, 4))
+        ).pack(side="left", padx=(0, 4), pady=6)
         tk.Button(
             bar,
             text="清除",
             command=self._clear_cookie,
-            bg=CARD,
+            bg="#f1f5f9",
             fg=MUTED,
-            activebackground=BORDER,
+            activebackground="#e2e8f0",
             activeforeground=FG,
             relief="flat",
             bd=0,
@@ -808,16 +843,16 @@ class DanmakuApp:
             padx=10,
             pady=4,
             cursor="hand2",
-        ).pack(side="left")
+        ).pack(side="left", pady=6)
 
         self.cookie_hint_var = tk.StringVar(value="未填：只能收弹幕，收不到礼物")
         tk.Label(
             bar,
             textvariable=self.cookie_hint_var,
-            bg=BG,
+            bg=CARD,
             fg="#6f7a8c",
             font=(FONT, 8),
-        ).pack(side="left", padx=(8, 0))
+        ).pack(side="left", padx=(8, 12))
 
         # 如果本机已有 cookie.txt，自动读取，省得每次粘贴。
         if (app_dir() / "cookie.txt").exists():
@@ -870,22 +905,43 @@ class DanmakuApp:
         body.grid_rowconfigure(1, weight=2)
 
         self.chat_card, chat_body, self.chat_badge = self._make_card(
-            body, "弹幕", "全部聊天 · 消费等级 / 粉丝团 / 昵称"
+            body,
+            "弹幕",
+            "全部聊天 · ★ 消费>35 或 粉丝团≥15 高亮 · 🔥 消费>40 或 粉丝团≥18 超级高亮",
         )
         self.chat_card.grid(row=0, column=0, rowspan=2, sticky="nsew", padx=(0, 10))
         self.chat_tree = self._make_tree(
             chat_body,
             [
-                ("pay", "消费等级", 82, "center", False),
-                ("level", "粉丝团", 76, "center", False),
-                ("nick", "昵称", 150, "w", False),
-                ("content", "弹幕内容", 520, "w", True),
+                ("pay", "消费等级", 92, "center", False),
+                ("level", "粉丝团", 82, "center", False),
+                ("nick", "昵称", 180, "w", False),
+                ("content", "弹幕内容", 560, "w", True),
             ],
         )
         self.chat_tree.tag_configure("odd", background=CARD)
         self.chat_tree.tag_configure("even", background=CARD_ALT)
-        self.chat_tree.tag_configure("vip", foreground="#ffd166")
+        self.chat_tree.tag_configure(
+            "hot",
+            background="#fff1c9",
+            foreground="#5a4300",
+            font=(FONT, 10, "bold"),
+        )
+        self.chat_tree.tag_configure(
+            "super",
+            background="#ffdede",
+            foreground="#8f0018",
+            font=(FONT, 12, "bold"),
+        )
         self.chat_tree.bind("<Double-1>", self._copy_chat)
+        self.chat_placeholder = tk.Label(
+            chat_body,
+            text="等待弹幕…",
+            bg=CARD,
+            fg="#94a3b8",
+            font=(FONT, 10),
+        )
+        self.chat_placeholder.place(relx=0.5, rely=0.5, anchor="center")
 
         self.entry_card, entry_body, self.entry_badge = self._make_card(
             body, "入场", "粉丝团灯牌 > 15 级"
@@ -901,6 +957,14 @@ class DanmakuApp:
         )
         self.entry_tree.tag_configure("odd", background=CARD)
         self.entry_tree.tag_configure("even", background=CARD_ALT)
+        self.entry_placeholder = tk.Label(
+            entry_body,
+            text="等待 15 级以上粉丝团入场…",
+            bg=CARD,
+            fg="#94a3b8",
+            font=(FONT, 9),
+        )
+        self.entry_placeholder.place(relx=0.5, rely=0.55, anchor="center")
 
         self.gift_card, gift_body, self.gift_badge = self._make_card(
             body, "礼物", "整组累计 >90 钻；显示 ID / 名称 / 数量 / 钻石"
@@ -916,7 +980,8 @@ class DanmakuApp:
             highlightthickness=1,
         )
         head = tk.Frame(card, bg=CARD)
-        head.pack(fill="x", padx=12, pady=(9, 6))
+        head.pack(fill="x", padx=12, pady=(10, 6))
+        tk.Frame(head, bg=ACCENT, width=3, height=16).pack(side="left", padx=(0, 7))
         tk.Label(
             head, text=title, bg=CARD, fg=FG, font=(FONT, 11, "bold")
         ).pack(side="left")
@@ -926,8 +991,8 @@ class DanmakuApp:
         badge = tk.Label(
             head,
             text="0",
-            bg="#232b38",
-            fg=MUTED,
+            bg="#eef2f7",
+            fg="#475569",
             font=(FONT, 8, "bold"),
             padx=7,
             pady=1,
@@ -942,17 +1007,23 @@ class DanmakuApp:
             parent,
             columns=[c[0] for c in columns],
             show="headings",
-            style="Dark.Treeview",
+            style="Light.Treeview",
             selectmode="browse",
         )
         for key, label, width, anchor, stretch in columns:
             tree.heading(key, text=label, anchor=anchor)
             tree.column(key, width=width, anchor=anchor, stretch=stretch, minwidth=40)
-        scroll = ttk.Scrollbar(
+        scroll = tk.Scrollbar(
             parent,
             orient="vertical",
             command=tree.yview,
-            style="Dark.Vertical.TScrollbar",
+            bg="#cbd5e1",
+            troughcolor="#f4f7fb",
+            activebackground="#b6c2d1",
+            highlightthickness=0,
+            bd=0,
+            relief="flat",
+            width=12,
         )
         tree.configure(yscrollcommand=scroll.set)
         tree.pack(side="left", fill="both", expand=True)
@@ -966,11 +1037,17 @@ class DanmakuApp:
         self.gift_canvas = tk.Canvas(
             wrap, bg=CARD, highlightthickness=0, bd=0, takefocus=0
         )
-        scroll = ttk.Scrollbar(
+        scroll = tk.Scrollbar(
             wrap,
             orient="vertical",
             command=self.gift_canvas.yview,
-            style="Dark.Vertical.TScrollbar",
+            bg="#cbd5e1",
+            troughcolor="#f4f7fb",
+            activebackground="#b6c2d1",
+            highlightthickness=0,
+            bd=0,
+            relief="flat",
+            width=12,
         )
         self.gift_canvas.configure(yscrollcommand=scroll.set)
         self.gift_canvas.pack(side="left", fill="both", expand=True)
@@ -992,6 +1069,21 @@ class DanmakuApp:
             ),
         )
         self.gift_canvas.bind("<MouseWheel>", self._on_gift_wheel)
+        self.gift_placeholder = None
+        self._show_gift_placeholder()
+
+    def _show_gift_placeholder(self):
+        if self.gift_placeholder is not None:
+            return
+        self.gift_placeholder = tk.Label(
+            self.gift_inner,
+            text="高价值礼物会显示在这里\n单条 / 整组累计 > 90 钻",
+            bg=CARD,
+            fg="#94a3b8",
+            font=(FONT, 9),
+            justify="center",
+        )
+        self.gift_placeholder.pack(pady=34)
 
     def _on_gift_wheel(self, event):
         try:
@@ -1000,25 +1092,35 @@ class DanmakuApp:
             pass
 
     def _add_gift_row(self, event):
+        if self.gift_placeholder is not None:
+            self.gift_placeholder.destroy()
+            self.gift_placeholder = None
         bg = CARD if self.gift_count % 2 == 0 else CARD_ALT
-        row = tk.Frame(self.gift_inner, bg=bg)
-        row.pack(fill="x", padx=2, pady=2)
+        row = tk.Frame(
+            self.gift_inner,
+            bg=bg,
+            highlightbackground="#eef2f7",
+            highlightthickness=1,
+        )
+        row.pack(fill="x", padx=8, pady=3)
         uid = tk.Label(
             row,
             text=f"ID {event.get('user_id', '')}",
             bg=bg,
             fg=BLUE,
-            font=(FONT, 10, "bold"),
+            font=(FONT, 11, "bold"),
             anchor="w",
+            pady=3,
         )
-        uid.pack(side="left")
+        uid.pack(side="left", padx=(8, 0))
         name = tk.Label(
             row,
             text=event.get("gift_name", ""),
             bg=bg,
             fg=FG,
-            font=(FONT, 11, "bold"),
+            font=(FONT, 12, "bold"),
             anchor="w",
+            pady=3,
         )
         name.pack(side="left", padx=(10, 0))
         count = tk.Label(
@@ -1026,8 +1128,9 @@ class DanmakuApp:
             text=f"× {event.get('gift_count', 1)}",
             bg=bg,
             fg=ACCENT_DIM,
-            font=(FONT, 10, "bold"),
+            font=(FONT, 11, "bold"),
             anchor="w",
+            pady=3,
         )
         count.pack(side="left", padx=(8, 0))
         diamonds = tk.Label(
@@ -1035,10 +1138,11 @@ class DanmakuApp:
             text=f"{fmt_int(event.get('diamonds', 0))} 钻",
             bg=bg,
             fg=YELLOW,
-            font=(FONT, 10, "bold"),
+            font=(FONT, 11, "bold"),
             anchor="e",
+            pady=3,
         )
-        diamonds.pack(side="right", padx=(8, 4))
+        diamonds.pack(side="right", padx=(8, 8))
         for widget in (row, uid, name, count, diamonds):
             widget.bind("<MouseWheel>", self._on_gift_wheel)
         return {
@@ -1056,7 +1160,7 @@ class DanmakuApp:
         info["diamonds"].configure(text=f"{fmt_int(event.get('diamonds', 0))} 钻")
         # 同一组更新后移到底部，保持最新礼物可见
         info["frame"].pack_forget()
-        info["frame"].pack(fill="x", padx=2, pady=2)
+        info["frame"].pack(fill="x", padx=8, pady=3)
 
     def _scroll_gift_bottom(self):
         try:
@@ -1088,7 +1192,7 @@ class DanmakuApp:
         ).pack(side="left", padx=(10, 0))
 
         row = tk.Frame(card, bg=CARD)
-        row.pack(fill="x", padx=8, pady=(4, 10))
+        row.pack(fill="x", padx=8, pady=(4, 12))
         self.summary_vars = {}
         specs = [
             ("online", "当前在线", "人", GREEN),
@@ -1099,31 +1203,39 @@ class DanmakuApp:
         ]
         for index, (key, label, unit, color) in enumerate(specs):
             row.grid_columnconfigure(index, weight=1)
-            cell = tk.Frame(row, bg=CARD)
-            cell.grid(row=0, column=index, sticky="nsew", padx=8)
+            cell = tk.Frame(
+                row,
+                bg="#f8fafc",
+                highlightbackground="#eef2f7",
+                highlightthickness=1,
+            )
+            cell.grid(row=0, column=index, sticky="nsew", padx=4)
+            inner = tk.Frame(cell, bg="#f8fafc")
+            inner.pack(fill="both", expand=True, padx=12, pady=8)
+            tk.Frame(inner, bg=color, width=24, height=3).pack(anchor="w")
             tk.Label(
-                cell, text=label, bg=CARD, fg=MUTED, font=(FONT, 9)
-            ).pack(anchor="w")
-            line = tk.Frame(cell, bg=CARD)
-            line.pack(anchor="w", pady=(2, 0))
+                inner, text=label, bg="#f8fafc", fg=MUTED, font=(FONT, 9)
+            ).pack(anchor="w", pady=(5, 0))
+            line = tk.Frame(inner, bg="#f8fafc")
+            line.pack(anchor="w", pady=(1, 0))
             var = tk.StringVar(value="--")
             self.summary_vars[key] = var
             tk.Label(
                 line,
                 textvariable=var,
-                bg=CARD,
+                bg="#f8fafc",
                 fg=color,
-                font=(FONT, 20, "bold"),
+                font=(FONT, 22, "bold"),
             ).pack(side="left")
             tk.Label(
-                line, text=unit, bg=CARD, fg=MUTED, font=(FONT, 9)
-            ).pack(side="left", padx=(4, 0), pady=(0, 3))
+                line, text=unit, bg="#f8fafc", fg=MUTED, font=(FONT, 9)
+            ).pack(side="left", padx=(4, 0), pady=(0, 4))
             if key == "payers":
                 self.payer_detail = tk.StringVar(value="")
                 tk.Label(
-                    cell,
+                    inner,
                     textvariable=self.payer_detail,
-                    bg=CARD,
+                    bg="#f8fafc",
                     fg=MUTED,
                     font=(FONT, 8),
                 ).pack(anchor="w")
@@ -1145,7 +1257,7 @@ class DanmakuApp:
             bar,
             textvariable=self.csv_var,
             bg=BG,
-            fg="#546074",
+            fg="#6b7586",
             font=(FONT, 8),
             anchor="e",
         ).pack(side="right")
@@ -1169,7 +1281,9 @@ class DanmakuApp:
         self.client = DanmakuClient(live_id, self.events, cookie=cookie)
         self.client_thread = threading.Thread(target=self.client.run, daemon=True)
         self.client_thread.start()
-        self.connect_btn.configure(state="disabled", bg="#6b2434")
+        self.connect_btn.configure(
+            state="disabled", bg="#fef3c7", fg="#92400e", text="连接中…"
+        )
         self.disconnect_btn.configure(state="normal", fg=FG)
         self.hint_var.set(f"直播间 {live_id} · 连接中…")
         if cookie:
@@ -1184,7 +1298,9 @@ class DanmakuApp:
         if client is not None:
             client.stop()
             self.client = None
-        self.connect_btn.configure(state="normal", bg=ACCENT)
+        self.connect_btn.configure(
+            state="normal", bg=ACCENT, fg="#ffffff", text="连接"
+        )
         self.disconnect_btn.configure(state="disabled", fg=MUTED)
         if client is not None:
             self._set_status("已断开", MUTED)
@@ -1200,11 +1316,17 @@ class DanmakuApp:
                 tree.delete(item)
         for child in self.gift_inner.winfo_children():
             child.destroy()
+        self.gift_placeholder = None
+        self._show_gift_placeholder()
         self.chat_count = self.entry_count = self.gift_count = 0
         self.gift_rows.clear()
         self.chat_badge.configure(text="0")
         self.entry_badge.configure(text="0")
         self.gift_badge.configure(text="0")
+        if self.entry_placeholder is not None:
+            self.entry_placeholder.place(relx=0.5, rely=0.55, anchor="center")
+        if self.chat_placeholder is not None:
+            self.chat_placeholder.place(relx=0.5, rely=0.5, anchor="center")
         for var in self.summary_vars.values():
             var.set("--")
         self.payer_detail.set("")
@@ -1228,11 +1350,16 @@ class DanmakuApp:
     def _handle_event(self, event):
         kind = event.get("kind")
         if kind == "chat":
+            if self.chat_placeholder is not None:
+                self.chat_placeholder.place_forget()
             level = int(event.get("fans_club_level") or 0)
             pay_level = int(event.get("pay_level") or 0)
-            tags = ("odd" if self.chat_count % 2 else "even",)
-            if level >= 15:
-                tags = tags + ("vip",)
+            if pay_level > 40 or level >= 18:
+                tags = ("super",)
+            elif pay_level > 35 or level >= 15:
+                tags = ("hot",)
+            else:
+                tags = ("odd" if self.chat_count % 2 else "even",)
             self._insert(
                 self.chat_tree,
                 (
@@ -1247,6 +1374,8 @@ class DanmakuApp:
             self.chat_count += 1
             self.chat_badge.configure(text=fmt_int(self.chat_count))
         elif kind == "entry":
+            if self.entry_placeholder is not None:
+                self.entry_placeholder.place_forget()
             level = int(event.get("fans_club_level") or 0)
             self._insert(
                 self.entry_tree,
@@ -1310,8 +1439,19 @@ class DanmakuApp:
                 "stopped": MUTED,
             }.get(state, MUTED)
             self._set_status(text, color)
-            if state in ("stopped", "ended"):
-                self.connect_btn.configure(state="normal", bg=ACCENT)
+            if state == "connected":
+                self.connect_btn.configure(
+                    state="disabled", bg="#dcfce7", fg="#15803d", text="已连接"
+                )
+                self.disconnect_btn.configure(state="normal", fg=FG)
+            elif state in ("connecting", "reconnecting"):
+                self.connect_btn.configure(
+                    state="disabled", bg="#fef3c7", fg="#92400e", text="连接中…"
+                )
+            elif state in ("stopped", "ended", "disconnected", "error"):
+                self.connect_btn.configure(
+                    state="normal", bg=ACCENT, fg="#ffffff", text="连接"
+                )
                 self.disconnect_btn.configure(state="disabled", fg=MUTED)
             if state == "connected" and self.client and self.client.csv_path:
                 self.csv_var.set(f"CSV: {self.client.csv_path}")
