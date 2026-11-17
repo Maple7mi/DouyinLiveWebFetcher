@@ -69,14 +69,17 @@ def _normalize(row: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _load_raw_gifts(
-    log_dir: Path, user_meta: dict[str, dict[str, Any]]
+    log_dir: Path,
+    user_meta: dict[str, dict[str, Any]],
+    live_id: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     """旧版 CSV 只记录 >90 钻礼物；从 gifts_raw_*.jsonl 还原全部礼物。
 
     连击消息的 repeat_count 是累计值，按 group_id 取最大值作为整组数量。
     """
     result: dict[str, dict[str, Any]] = {}
-    for path in sorted(log_dir.glob("gifts_raw_*.jsonl")):
+    pattern = f"gifts_raw_{live_id}_*.jsonl" if live_id else "gifts_raw_*.jsonl"
+    for path in sorted(log_dir.glob(pattern)):
         groups: dict[str, dict[str, Any]] = {}
         try:
             lines = path.read_text(encoding="utf-8").splitlines()
@@ -165,8 +168,13 @@ def _load_raw_gifts(
     return result
 
 
-def load_messages_from_logs(log_dir: str | Path) -> list[dict[str, Any]]:
-    """读取 gui_*.csv + gifts_raw_*.jsonl，按 msg_id/group_id 去重并按时间排序。"""
+def load_messages_from_logs(
+    log_dir: str | Path, live_id: str | None = None
+) -> list[dict[str, Any]]:
+    """读取 gui_*.csv + gifts_raw_*.jsonl，按 msg_id/group_id 去重并按时间排序。
+
+    传入 live_id 时只读取该直播间的日志，避免多个直播间的数据混在同一天里。
+    """
     log_dir = Path(log_dir)
     if not log_dir.exists():
         return []
@@ -176,7 +184,8 @@ def load_messages_from_logs(log_dir: str | Path) -> list[dict[str, Any]]:
     user_meta: dict[str, dict[str, Any]] = {}
     anon = 0
 
-    for path in sorted(log_dir.glob("gui_*.csv")):
+    csv_pattern = f"gui_{live_id}_*.csv" if live_id else "gui_*.csv"
+    for path in sorted(log_dir.glob(csv_pattern)):
         try:
             with path.open("r", encoding="utf-8-sig", newline="") as fh:
                 for raw in csv.DictReader(fh):
@@ -211,7 +220,7 @@ def load_messages_from_logs(log_dir: str | Path) -> list[dict[str, Any]]:
             continue
 
     # 从 raw JSONL 还原全部礼物（含低于 90 钻的），与 CSV 礼物按 group 去重。
-    for key, row in _load_raw_gifts(log_dir, user_meta).items():
+    for key, row in _load_raw_gifts(log_dir, user_meta, live_id).items():
         old = gift_best.get(key)
         if old is None or row["diamonds"] > old["diamonds"]:
             gift_best[key] = row
@@ -440,7 +449,7 @@ def _leaderboard(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             uid,
             {
                 "user_id": uid,
-                "nickname": row["nickname"] or "未知用户",
+                "nickname": row["nickname"] or f"ID {row['user_id'][-8:]}",
                 "diamonds": 0,
                 "gift_count": 0,
                 "events": 0,
@@ -935,13 +944,14 @@ def main() -> None:
     parser.add_argument("--out", default="site", help="输出目录")
     parser.add_argument("--title", default="抖音弹幕归档")
     parser.add_argument("--mock", action="store_true", help="生成模拟数据")
+    parser.add_argument("--live-id", default=None, help="只导出指定直播间，例如 617650815017")
     args = parser.parse_args()
 
     if args.mock:
         rows = mock_messages()
         mock = True
     else:
-        rows = load_messages_from_logs(args.logs)
+        rows = load_messages_from_logs(args.logs, live_id=args.live_id)
         mock = False
 
     out = build_site(rows, args.out, title=args.title, mock=mock)

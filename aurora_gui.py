@@ -723,12 +723,19 @@ class AuroraApp:
         try:
             import site_builder
 
+            live_id = getattr(self.client, "live_id", None) if self.client else None
+            if not live_id:
+                try:
+                    live_id = parse_live_id(self.room_var.get())
+                except Exception:
+                    live_id = None
             out = app_dir() / "site"
-            data = site_builder.load_messages_from_logs(app_dir() / "logs")
+            data = site_builder.load_messages_from_logs(app_dir() / "logs", live_id=live_id)
             if not data:
                 messagebox.showinfo("导出网站", "还没有可导出的日志")
                 return
-            site_builder.build_site(data, out, title="抖音弹幕归档")
+            title = f"抖音弹幕归档 · {live_id}" if live_id else "抖音弹幕归档"
+            site_builder.build_site(data, out, title=title)
             import webbrowser
 
             webbrowser.open((out / "index.html").as_uri())
@@ -902,7 +909,21 @@ class AuroraApp:
         self.status_dot.itemconfigure(self._dot, fill=color)
 
 
+def _redirect_console_output():
+    """Keep GUI runs silent; diagnostics go to logs instead of a console."""
+    try:
+        log_dir = app_dir() / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        stdout_log = open(log_dir / "stdout.log", "a", encoding="utf-8", buffering=1)
+        stderr_log = open(log_dir / "stderr.log", "a", encoding="utf-8", buffering=1)
+        sys.stdout = stdout_log
+        sys.stderr = stderr_log
+    except Exception:
+        pass
+
+
 def main():
+    _redirect_console_output()
     if getattr(sys, "frozen", False):
         try:
             import ctypes
