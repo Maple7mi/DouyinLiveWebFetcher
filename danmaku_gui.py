@@ -113,6 +113,8 @@ class DanmakuClient(DouyinLiveWebFetcher):
         self._capture_room_meta()
         try:
             while not self._stop.is_set():
+                if not self._wait_until_live():
+                    break
                 self._emit("status", state="connecting", text="连接中…")
                 try:
                     self._connectWebSocket()
@@ -126,6 +128,17 @@ class DanmakuClient(DouyinLiveWebFetcher):
         finally:
             self._close_logs()
             self._emit("status", state="stopped", text="已停止")
+
+    def _wait_until_live(self) -> bool:
+        """未开播时保持等待，开播后再建立 WebSocket。"""
+        while not self._stop.is_set():
+            live = self.is_room_live()
+            if live is not False:
+                return True
+            self._emit("status", state="waiting", text="等待开播…")
+            if self._stop.wait(15):
+                return False
+        return False
 
     def stop(self):
         self._stop.set()

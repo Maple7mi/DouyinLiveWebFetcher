@@ -308,6 +308,40 @@ class DouyinLiveWebFetcher:
             nickname = user.get('nickname')
             print(f"【{nickname}】[{user_id}]直播间：{['正在直播', '已结束'][bool(room_status)]}.")
     
+    def is_room_live(self) -> bool | None:
+        """检查直播间是否在播。
+
+        Returns:
+            True 正在直播；False 未开播/已结束；None 页面结构无法判断。
+        """
+        page_headers = {
+            "User-Agent": self.user_agent,
+            "cookie": self._cookie_header(),
+        }
+        try:
+            page = self.session.get(
+                self.live_url + self.live_id, headers=page_headers, timeout=10
+            )
+            text = page.content.decode("utf-8", errors="ignore")
+            room_info = re.search(
+                r'roomInfo\\":\{\\"room\\":\{.*?\\"status\\":(\d+).*?\\"user_count_str\\":\\"(\d+)\\"',
+                text,
+                re.S,
+            )
+            if room_info:
+                status = int(room_info.group(1))
+                viewers = int(room_info.group(2))
+                if status == 4:
+                    return False
+                if status in (0, 2) and viewers > 0:
+                    return True
+            match = re.search(r'roomId\\?"?\s*:\s*\\?"?(\d+)', text)
+            if match:
+                return int(match.group(1)) > 0
+        except Exception:
+            pass
+        return None
+
     def fetch_room_meta(self) -> dict:
         """抓取主播昵称、真实 room_id、直播间标题，供导出网站显示。"""
         page_headers = {

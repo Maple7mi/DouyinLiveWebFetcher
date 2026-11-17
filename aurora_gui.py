@@ -1001,6 +1001,7 @@ class AuroraApp:
                 "connected": GREEN,
                 "connecting": GOLD,
                 "reconnecting": GOLD,
+                "waiting": GOLD,
                 "disconnected": RED,
                 "error": RED,
                 "ended": RED,
@@ -1016,6 +1017,11 @@ class AuroraApp:
                 self.connect_btn.configure(
                     state="disabled", bg="#3b3218", fg="#e8c36a", text="连接中…"
                 )
+            elif state == "waiting":
+                self.connect_btn.configure(
+                    state="disabled", bg="#3b3218", fg="#e8c36a", text="等待开播…"
+                )
+                self.disconnect_btn.configure(state="normal", fg=FG)
             elif state in ("stopped", "ended", "disconnected", "error"):
                 self.connect_btn.configure(
                     state="normal", bg=ACCENT, fg="#ffffff", text="连接"
