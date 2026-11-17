@@ -169,8 +169,8 @@ class AuroraApp:
         self.shell = tk.Frame(self.root, bg=BG)
         self.shell.pack(fill="both", expand=True, padx=14, pady=(12, 4))
         self.shell.grid_rowconfigure(0, weight=1)
-        self.shell.grid_columnconfigure(0, weight=7)
-        self.shell.grid_columnconfigure(1, weight=3)
+        self.shell.grid_columnconfigure(0, weight=3)
+        self.shell.grid_columnconfigure(1, weight=1)
 
         self.left_col = tk.Frame(self.shell, bg=BG)
         self.left_col.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
@@ -221,16 +221,21 @@ class AuroraApp:
         ).pack(side="left", padx=(16, 0))
 
         table_head = tk.Frame(panel, bg="#151a25")
-        table_head.pack(fill="x", padx=12)
-        for text, width in (("消费等级", 6), ("粉丝团", 6), ("昵称", 10)):
+        table_head.pack(fill="x", padx=(10, 21))
+        table_head.grid_columnconfigure(3, weight=1)
+        for column, text, width, font_size, font_weight, padx in (
+            (0, "消费等级", 6, 16, "normal", (10, 0)),
+            (1, "粉丝团", 6, 16, "normal", (4, 0)),
+            (2, "昵称", 9, 18, "bold", (4, 0)),
+        ):
             tk.Label(
                 table_head, text=text, width=width, anchor="w", bg="#151a25",
-                fg="#8d99ae", font=(FONT, 13, "bold"),
-            ).pack(side="left", padx=(10, 0), pady=7)
+                fg="#8d99ae", font=(FONT, font_size, font_weight),
+            ).grid(row=0, column=column, sticky="w", padx=padx, pady=7)
         tk.Label(
             table_head, text="弹幕内容", anchor="w", bg="#151a25",
-            fg="#8d99ae", font=(FONT, 13, "bold"),
-        ).pack(side="left", padx=(10, 0), pady=7)
+            fg="#8d99ae", font=(FONT, 18, "bold"),
+        ).grid(row=0, column=3, sticky="w", padx=(19, 10), pady=7)
 
         body = tk.Frame(panel, bg=CARD)
         body.pack(fill="both", expand=True, padx=10, pady=(0, 0))
@@ -1040,19 +1045,19 @@ class AuroraApp:
             text="",
             bg=bg,
             fg="#f2f5ff",
-            font=(FONT, 18, "bold"),
+            font=(FONT, 14, "bold"),
             anchor="w",
             width=7,
         )
         nick.pack(side="left")
-        pre = tk.Label(left, text="送出了", bg=bg, fg="#9aa6ba", font=(FONT, 13))
+        pre = tk.Label(left, text="送出了", bg=bg, fg="#9aa6ba", font=(FONT, 12))
         pre.pack(side="left", padx=(4, 0))
         gift = tk.Label(
             left,
             text="",
             bg=bg,
             fg="#ff9cc5",
-            font=(FONT, 18, "bold"),
+            font=(FONT, 17, "bold"),
             anchor="w",
             width=10,
         )
@@ -1062,7 +1067,7 @@ class AuroraApp:
             text="",
             bg=bg,
             fg=GOLD,
-            font=(FONT, 18, "bold"),
+            font=(FONT, 17, "bold"),
             anchor="e",
             padx=0,
         )
