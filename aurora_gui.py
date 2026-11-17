@@ -791,6 +791,13 @@ class AuroraApp:
 
     def disconnect(self):
         client = self.client
+        if (
+            client is not None
+            and self.total_events > 0
+            and self.total_events != self._last_auto_export_events
+        ):
+            if self.export_site(open_browser=False, quiet=True):
+                self._last_auto_export_events = self.total_events
         if client is not None:
             client.stop()
             self.client = None
