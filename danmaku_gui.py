@@ -19,6 +19,7 @@ import gzip
 import json
 import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -69,6 +70,7 @@ MEMBERSHIP_PRICES = {
     "星守护": 1280,
     "会员": 980,
 }
+FANCLUB_JOIN_PRICE = 1
 
 
 def app_dir() -> Path:
@@ -651,16 +653,34 @@ class DanmakuClient(DouyinLiveWebFetcher):
             user=None,
         )
 
+    @staticmethod
+    def _membership_price(text: str, base: int) -> int:
+        """尽量从消息文案里读出实际价格/月数；读不到才用基础价估算。"""
+        explicit = re.search(r"(\d{2,6})\s*(?:钻|钻石|抖币)", text)
+        if explicit:
+            return int(explicit.group(1))
+        months = re.search(r"(\d+)\s*个?\s*月", text)
+        if months:
+            return base * max(1, int(months.group(1)))
+        days = re.search(r"(\d+)\s*天", text)
+        if days:
+            return max(1, round(base * int(days.group(1)) / 30))
+        return base
+
     def _record_membership(self, content: str, msg_id: str, user):
-        """星守护/直播会员不是普通 GiftMessage，按付费事件补录。"""
+        """星守护/直播会员/加入粉丝团按付费事件补录。"""
         text = str(content or "").strip()
         label = ""
         price = 0
-        for name, value in MEMBERSHIP_PRICES.items():
-            if name in text:
-                label = name
-                price = value
-                break
+        if "加入粉丝团" in text or "加入了粉丝团" in text:
+            label = "加入粉丝团"
+            price = FANCLUB_JOIN_PRICE
+        else:
+            for name, base in MEMBERSHIP_PRICES.items():
+                if name in text:
+                    label = name
+                    price = self._membership_price(text, base)
+                    break
         if not label or not price or not user or not user.id:
             return
         if not self._once("gift", msg_id):
@@ -685,11 +705,13 @@ class DanmakuClient(DouyinLiveWebFetcher):
             gift_count=1,
             diamonds=price,
             group_id="",
-            visible=1,
+            visible=1 if price > 90 else 0,
             group_key=msg_id or f"member-{uid}-{int(time.time())}",
         )
         self._write_csv("gift", **data)
-        self._emit("gift", **data)
+        if price > 90:
+            self._emit("gift", **data)
+        self._emit_summary()
 
     def _parseControlMsg(self, payload):
         message = ControlMessage().parse(payload)
