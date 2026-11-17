@@ -25,10 +25,13 @@ import time
 import tkinter as tk
 import traceback
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from tkinter import messagebox, ttk
 
+import requests
 import websocket
+from PIL import Image, ImageTk
 
 from collect import parse_live_id
 from liveMan import DouyinLiveWebFetcher
@@ -60,6 +63,7 @@ GREEN = "#2dd4a7"
 YELLOW = "#f5c451"
 BLUE = "#5aa9ff"
 FONT = "Microsoft YaHei UI"
+GIFT_ICON_SIZE = 30
 
 
 def app_dir() -> Path:
@@ -408,6 +412,14 @@ class DanmakuClient(DouyinLiveWebFetcher):
         group = int(message.group_id or 0)
         total_count = int(message.total_count or 0)
         unit = int(gift.diamond_count or 0)
+        icon_url = ""
+        try:
+            image = gift.image or gift.icon
+            urls = list(getattr(image, "url_list_list", []) or [])
+            if urls:
+                icon_url = str(urls[0])
+        except Exception:
+            icon_url = ""
 
         # 原始礼物消息留档，便于核对连击计数语义
         if self._gift_raw:
@@ -419,6 +431,7 @@ class DanmakuClient(DouyinLiveWebFetcher):
                             "msg_id": msg_id,
                             "gift_id": str(gift.id),
                             "gift_name": gift.name,
+                            "icon_url": icon_url,
                             "unit_diamond": unit,
                             "repeat_count": repeat,
                             "combo_count": combo,
@@ -475,6 +488,7 @@ class DanmakuClient(DouyinLiveWebFetcher):
                 gift_name=gift.name,
                 gift_count=group_total,
                 diamonds=total_diamonds,
+                icon_url=icon_url,
                 group_key=str(group) if group else msg_id,
             )
             self._emit("gift", **data)
@@ -539,7 +553,10 @@ class DanmakuApp:
         self.chat_count = 0
         self.entry_count = 0
         self.gift_count = 0
-        self.gift_rows: dict[str, str] = {}
+        self.gift_rows: dict[str, dict] = {}
+        self._gift_icons: dict[str, ImageTk.PhotoImage] = {}
+        self._gift_icon_pending: set[str] = set()
+        self._gift_icon_failed: set[str] = set()
 
         self._setup_style()
         self._build_topbar()
@@ -864,19 +881,7 @@ class DanmakuApp:
             body, "礼物", "整组累计 >90 钻；总额/付费人数统计全部礼物"
         )
         self.gift_card.grid(row=1, column=1, sticky="nsew")
-        self.gift_tree = self._make_tree(
-            gift_body,
-            [
-                ("time", "时间", 58, "center", False),
-                ("level", "灯牌", 45, "center", False),
-                ("nick", "昵称", 95, "w", False),
-                ("gift", "礼物", 95, "w", False),
-                ("count", "数量", 45, "center", False),
-                ("diamond", "钻", 60, "e", False),
-            ],
-        )
-        self.gift_tree.tag_configure("odd", background=CARD)
-        self.gift_tree.tag_configure("even", background=CARD_ALT)
+        self._build_gift_list(gift_body)
 
     def _make_card(self, parent, title: str, subtitle: str):
         card = tk.Frame(
@@ -928,6 +933,177 @@ class DanmakuApp:
         tree.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
         return tree
+
+    # -- 礼物列表（图标 + 送出了 + 名称 × 数量） -------------------------
+    def _build_gift_list(self, parent):
+        wrap = tk.Frame(parent, bg=CARD)
+        wrap.pack(fill="both", expand=True)
+        self.gift_canvas = tk.Canvas(
+            wrap, bg=CARD, highlightthickness=0, bd=0, takefocus=0
+        )
+        scroll = ttk.Scrollbar(
+            wrap,
+            orient="vertical",
+            command=self.gift_canvas.yview,
+            style="Dark.Vertical.TScrollbar",
+        )
+        self.gift_canvas.configure(yscrollcommand=scroll.set)
+        self.gift_canvas.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        self.gift_inner = tk.Frame(self.gift_canvas, bg=CARD)
+        self._gift_window = self.gift_canvas.create_window(
+            (0, 0), window=self.gift_inner, anchor="nw"
+        )
+        self.gift_inner.bind(
+            "<Configure>",
+            lambda _e: self.gift_canvas.configure(
+                scrollregion=self.gift_canvas.bbox("all")
+            ),
+        )
+        self.gift_canvas.bind(
+            "<Configure>",
+            lambda e: self.gift_canvas.itemconfigure(
+                self._gift_window, width=e.width
+            ),
+        )
+        self.gift_canvas.bind("<MouseWheel>", self._on_gift_wheel)
+
+    def _on_gift_wheel(self, event):
+        try:
+            self.gift_canvas.yview_scroll(int(-event.delta / 120), "units")
+        except Exception:
+            pass
+
+    def _add_gift_row(self, event):
+        bg = CARD if self.gift_count % 2 == 0 else CARD_ALT
+        row = tk.Frame(self.gift_inner, bg=bg)
+        row.pack(fill="x", padx=2, pady=1)
+        prefix = tk.Label(
+            row, text="送出了", bg=bg, fg=MUTED, font=(FONT, 9)
+        )
+        prefix.pack(side="left")
+        icon = tk.Label(
+            row,
+            text="…",
+            bg=bg,
+            fg=MUTED,
+            font=(FONT, 8),
+            width=3,
+            anchor="center",
+        )
+        icon.pack(side="left", padx=(3, 4))
+        name = tk.Label(
+            row,
+            text=event.get("gift_name", ""),
+            bg=bg,
+            fg=FG,
+            font=(FONT, 9, "bold"),
+            anchor="w",
+        )
+        name.pack(side="left")
+        count = tk.Label(
+            row,
+            text=f"× {event.get('gift_count', 1)}",
+            bg=bg,
+            fg=ACCENT_DIM,
+            font=(FONT, 9, "bold"),
+            anchor="w",
+        )
+        count.pack(side="left", padx=(6, 0))
+        detail = tk.Label(
+            row,
+            text=self._gift_detail(event),
+            bg=bg,
+            fg=MUTED,
+            font=(FONT, 8),
+            anchor="e",
+        )
+        detail.pack(side="right", padx=(8, 2))
+        for widget in (row, prefix, icon, name, count, detail):
+            widget.bind("<MouseWheel>", self._on_gift_wheel)
+        info = {
+            "frame": row,
+            "icon": icon,
+            "name": name,
+            "count": count,
+            "detail": detail,
+        }
+        return info
+
+    def _gift_detail(self, event):
+        nickname = event.get("nickname") or ""
+        diamonds = fmt_int(event.get("diamonds", 0))
+        level = int(event.get("fans_club_level") or 0)
+        level_text = f"Lv.{level} · " if level else ""
+        return f"{level_text}{nickname} · {diamonds} 钻"
+
+    def _update_gift_row(self, info, event):
+        info["name"].configure(text=event.get("gift_name", ""))
+        info["count"].configure(text=f"× {event.get('gift_count', 1)}")
+        info["detail"].configure(text=self._gift_detail(event))
+        # 同一组更新后移到底部，保持最新礼物可见
+        info["frame"].pack_forget()
+        info["frame"].pack(fill="x", padx=2, pady=1)
+
+    def _ensure_gift_icon(self, key: str, url: str):
+        if not key or not url:
+            return
+        if (
+            key in self._gift_icons
+            or key in self._gift_icon_pending
+            or key in self._gift_icon_failed
+        ):
+            return
+        self._gift_icon_pending.add(key)
+        threading.Thread(
+            target=self._download_gift_icon,
+            args=(key, url),
+            daemon=True,
+        ).start()
+
+    def _download_gift_icon(self, key: str, url: str):
+        try:
+            response = requests.get(
+                url,
+                timeout=8,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
+                    ),
+                    "Referer": "https://live.douyin.com/",
+                },
+            )
+            response.raise_for_status()
+            if response.content:
+                self.events.put(
+                    {"kind": "gift_icon", "key": key, "data": response.content}
+                )
+        except Exception:
+            self._gift_icon_failed.add(key)
+        finally:
+            self._gift_icon_pending.discard(key)
+
+    def _apply_gift_icon(self, key: str, data: bytes):
+        if not key or not data or key in self._gift_icons:
+            return
+        try:
+            image = Image.open(BytesIO(data)).convert("RGBA")
+            image.thumbnail((GIFT_ICON_SIZE, GIFT_ICON_SIZE), Image.LANCZOS)
+            photo = ImageTk.PhotoImage(image)
+        except Exception:
+            return
+        self._gift_icons[key] = photo
+        info = self.gift_rows.get(key)
+        if info:
+            info["icon"].configure(image=photo, text="")
+
+    def _scroll_gift_bottom(self):
+        try:
+            self.gift_canvas.update_idletasks()
+            self.gift_canvas.yview_moveto(1.0)
+        except Exception:
+            pass
 
     # -- 总结 -------------------------------------------------------------
     def _build_summary(self):
@@ -1059,11 +1235,16 @@ class DanmakuApp:
         self.root.destroy()
 
     def _clear_tables(self):
-        for tree in (self.chat_tree, self.entry_tree, self.gift_tree):
+        for tree in (self.chat_tree, self.entry_tree):
             for item in tree.get_children():
                 tree.delete(item)
+        for child in self.gift_inner.winfo_children():
+            child.destroy()
         self.chat_count = self.entry_count = self.gift_count = 0
         self.gift_rows.clear()
+        self._gift_icons.clear()
+        self._gift_icon_pending.clear()
+        self._gift_icon_failed.clear()
         self.chat_badge.configure(text="0")
         self.entry_badge.configure(text="0")
         self.gift_badge.configure(text="0")
@@ -1124,29 +1305,23 @@ class DanmakuApp:
             self.entry_badge.configure(text=fmt_int(self.entry_count))
         elif kind == "gift":
             key = str(event.get("group_key") or event.get("msg_id") or "")
-            values = (
-                event.get("ts", ""),
-                event.get("fans_club_level", ""),
-                event.get("nickname", ""),
-                event.get("gift_name", ""),
-                f"x{event.get('gift_count', 1)}",
-                fmt_int(event.get("diamonds", 0)),
-            )
-            existing = self.gift_rows.get(key)
-            if existing and self.gift_tree.exists(existing):
-                self.gift_tree.item(existing, values=values)
-                self.gift_tree.move(existing, "", "end")
+            info = self.gift_rows.get(key) if key else None
+            if info:
+                self._update_gift_row(info, event)
             else:
-                iid = self._insert(
-                    self.gift_tree,
-                    values,
-                    ("odd" if self.gift_count % 2 else "even",),
-                    300,
-                )
+                info = self._add_gift_row(event)
                 if key:
-                    self.gift_rows[key] = iid
+                    self.gift_rows[key] = info
                 self.gift_count += 1
                 self.gift_badge.configure(text=fmt_int(self.gift_count))
+                self._scroll_gift_bottom()
+            icon_url = str(event.get("icon_url") or "")
+            if icon_url:
+                self._ensure_gift_icon(key, icon_url)
+        elif kind == "gift_icon":
+            self._apply_gift_icon(
+                str(event.get("key") or ""), event.get("data") or b""
+            )
         elif kind == "summary":
             online = event.get("online")
             if online:

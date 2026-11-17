@@ -4,7 +4,7 @@
 
 - **弹幕**：全部聊天，按「消费等级、粉丝团等级、昵称、弹幕内容」展示；
 - **入场**：只显示粉丝团灯牌 **> 15 级** 的进入直播间消息；
-- **礼物**：只显示整组累计总价值 **> 90 钻（9 元）** 的礼物，按「单价 × 本次数量」计算，连击按组内累计；下方的「礼物总额 / 付费人数」统计**所有**礼物，不受 90 钻门槛影响；
+- **礼物**：只显示整组累计总价值 **> 90 钻（9 元）** 的礼物，按「单价 × 本次数量」计算，连击按组内累计；每条显示为「送出了 [礼物图标] 礼物名称 × 数量」；下方的「礼物总额 / 付费人数」统计**所有**礼物，不受 90 钻门槛影响；
 - **本场直播总结**：当前在线、本场涨粉、付费人数、礼物总额、累计观看。
 
 ## 启动
@@ -49,7 +49,7 @@ py -3.12 -m venv .venv
 CSV 表头：
 
 ```text
-received_at,kind,msg_id,user_id,nickname,fans_club_level,content,gift_name,gift_count,diamonds
+received_at,kind,msg_id,user_id,nickname,fans_club_level,pay_level,content,gift_name,gift_count,diamonds
 ```
 
 ## 口径说明
