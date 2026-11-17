@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import queue
 import sys
 import threading
@@ -42,13 +43,45 @@ RED = "#ff5d73"
 BLUE = "#5aa9ff"
 FONT = "Microsoft YaHei UI"
 APP_NAME = "弹幕助手"
+WINDOW_TITLE = f"{APP_NAME} · Aurora Dark"
 GIFT_LIMIT = 50
+_SINGLE_MUTEX = None
+
+
+def _focus_existing_window() -> bool:
+    """Windows 下若已有同名窗口，直接聚焦它，避免重复开窗。"""
+    if sys.platform != "win32":
+        return False
+    try:
+        user32 = ctypes.windll.user32
+        hwnd = user32.FindWindowW(None, WINDOW_TITLE)
+        if hwnd:
+            user32.ShowWindow(hwnd, 9)
+            user32.SetForegroundWindow(hwnd)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _acquire_single_instance() -> bool:
+    global _SINGLE_MUTEX
+    if sys.platform != "win32":
+        return True
+    try:
+        kernel32 = ctypes.windll.kernel32
+        _SINGLE_MUTEX = kernel32.CreateMutexW(None, False, "Local\\DanmakuAssistantAurora")
+        if not _SINGLE_MUTEX:
+            return True
+        return kernel32.GetLastError() != 183
+    except Exception:
+        return True
 
 
 class AuroraApp:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title(f"{APP_NAME} · Aurora Dark")
+        self.root.title(WINDOW_TITLE)
         self.root.geometry("1600x1000")
         self.root.minsize(1280, 800)
         self.root.configure(bg=BG)
@@ -1151,6 +1184,12 @@ def main():
             live_id=live_id,
         )
         print(f"EXPORT_SITE_OK {len(rows)} {out}")
+        return
+
+    if _focus_existing_window():
+        return
+    if not _acquire_single_instance():
+        _focus_existing_window()
         return
 
     root = tk.Tk()
