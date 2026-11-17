@@ -7,4 +7,4 @@ if not exist ".venv\Scripts\pythonw.exe" (
   pause
   exit /b 1
 )
-start "" ".venv\Scripts\pythonw.exe" danmaku_gui.py
+start "" ".venv\Scripts\pythonw.exe" aurora_gui.py
