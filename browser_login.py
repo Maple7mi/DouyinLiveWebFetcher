@@ -209,16 +209,6 @@ def login_and_get_cookie(
                 if status_cb:
                     status_cb("已检测到登录，正在读取 Cookie…")
                 return header
-            if proc.poll() is not None:
-                # Edge 可能把窗口交给后台进程；再读一次，仍失败才报错。
-                cookies = _read_cookies(cdp)
-                header = _cookie_header(cookies)
-                if header:
-                    return header
-                raise BrowserLoginError(
-                    "登录窗口已关闭，未读到登录 Cookie。请重新点击登录，"
-                    "登录成功后先不要关闭 Edge，等程序提示成功。"
-                )
             now = time.time()
             if status_cb and now - last_report > 5:
                 last_report = now
@@ -227,6 +217,11 @@ def login_and_get_cookie(
         raise BrowserLoginError("登录超时，请重新点击登录。")
     finally:
         if cdp is not None:
+            # 让 CDP 自己关闭这个独立浏览器；启动器进程可能早已退出，不能再依赖 proc。
+            try:
+                cdp.call("Browser.close", timeout=2)
+            except Exception:
+                pass
             cdp.close()
         try:
             proc.terminate()

@@ -12,12 +12,13 @@
 from __future__ import annotations
 
 import argparse
+import bisect
 import csv
 import html
 import json
 import random
 import re
-from collections import OrderedDict
+from collections import Counter, OrderedDict, defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,21 @@ KIND_LABELS = {
     "gift": "礼物",
     "entry": "入场",
 }
+
+# 抽奖/引流类弹幕：命中即从归档中删除，避免污染流速与复盘。
+LOTTERY_RE = re.compile(
+    r"抽奖|福袋|口令|红包|截屏|截图|中奖|抽我|选我|"
+    r"小黄车|下单|购物车|点击|左上角|右下角|"
+    r"关注主播|加入粉丝团|加粉丝团|上电视|上车",
+    re.IGNORECASE,
+)
+DUP_BUCKET_SECONDS = 30
+DUP_MIN_COUNT = 8
+DUP_MIN_LEN = 3
+PEAK_WINDOW_SECONDS = 30
+PEAK_STEP_SECONDS = 2
+PEAK_MIN_GAP_SECONDS = 300
+PEAK_TOP_N = 10
 
 
 def _int(value: Any, default: int = 0) -> int:
@@ -54,7 +70,7 @@ def _file_session_date(path: Path) -> str:
 
 
 def _normalize(
-    row: dict[str, Any], session_date: str = ""
+    row: dict[str, Any], session_date: str = "", session_id: str = ""
 ) -> dict[str, Any] | None:
     received = _clean(row.get("received_at"))
     if not received:
@@ -81,7 +97,145 @@ def _normalize(
         "session_date": _clean(row.get("session_date"))
         or session_date
         or received[:10],
+        "session_id": session_id or _clean(row.get("session_id")),
+        "dup_excluded": _int(row.get("dup_excluded")),
     }
+
+
+def _parse_ts(value: str) -> datetime | None:
+    text = _clean(value)
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00").replace(" ", "T", 1))
+    except ValueError:
+        return None
+
+
+def _norm_text(value: str) -> str:
+    return re.sub(r"\s+", "", _clean(value)).casefold()
+
+
+def _punctuation_only(value: str) -> bool:
+    return not any(ch.isalnum() for ch in value)
+
+
+def _filter_lottery(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """抽奖/引流关键词直接删除，只作用于弹幕。"""
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        if row["kind"] == "chat" and LOTTERY_RE.search(row.get("content", "")):
+            continue
+        result.append(row)
+    return result
+
+
+def _mark_duplicate_chats(rows: list[dict[str, Any]]) -> int:
+    """30 秒内同一文本出现 >=8 次才视为刷屏。
+
+    纯标点/短句（例如 ?？、哈哈）不参与，避免误伤真实弹幕。
+    """
+    buckets: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        if row["kind"] != "chat":
+            continue
+        text = _norm_text(row.get("content", ""))
+        if len(text) < DUP_MIN_LEN or _punctuation_only(text):
+            continue
+        ts = _parse_ts(row.get("received_at", ""))
+        if ts is None:
+            continue
+        buckets[(text, int(ts.timestamp()) // DUP_BUCKET_SECONDS)].append(row)
+    count = 0
+    for group in buckets.values():
+        if len(group) < DUP_MIN_COUNT:
+            continue
+        for row in group:
+            if not row.get("dup_excluded"):
+                row["dup_excluded"] = 1
+                count += 1
+    return count
+
+
+def _session_labels(rows: list[dict[str, Any]]) -> dict[str, str]:
+    first_seen: dict[str, str] = {}
+    for row in rows:
+        sid = row.get("session_id") or f"{row.get('session_date', '')}-1"
+        ts = row.get("received_at", "")
+        if sid not in first_seen or ts < first_seen[sid]:
+            first_seen[sid] = ts
+    ordered = sorted(first_seen, key=lambda sid: (first_seen[sid], sid))
+    return {sid: f"第{i}场" for i, sid in enumerate(ordered, 1)}
+
+
+def analyze_peaks(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """30 秒滑动窗口，按独立发送人数取 Top10，峰值间隔至少 5 分钟。"""
+    chats = [
+        row
+        for row in rows
+        if row["kind"] == "chat" and not row.get("dup_excluded")
+    ]
+    timed: list[tuple[datetime, dict[str, Any]]] = []
+    for row in chats:
+        ts = _parse_ts(row.get("received_at", ""))
+        if ts is not None:
+            timed.append((ts, row))
+    if not timed:
+        return []
+    timed.sort(key=lambda item: item[0])
+    times = [item[0] for item in timed]
+    labels = _session_labels(rows)
+    first = times[0]
+    last = times[-1]
+    candidates: list[dict[str, Any]] = []
+    cursor = first
+    while cursor <= last - timedelta(seconds=PEAK_WINDOW_SECONDS):
+        end = cursor + timedelta(seconds=PEAK_WINDOW_SECONDS)
+        left = bisect.bisect_left(times, cursor)
+        right = bisect.bisect_left(times, end)
+        window = timed[left:right]
+        if window:
+            senders = {
+                r.get("user_id") or r.get("nickname") or r.get("msg_id") or "-"
+                for _, r in window
+            }
+            sid = window[0][1].get("session_id") or f"{window[0][1].get('session_date', '')}-1"
+            candidates.append(
+                {
+                    "start": cursor,
+                    "end": end,
+                    "unique": len(senders),
+                    "messages": len(window),
+                    "session_id": sid,
+                    "session_label": labels.get(sid, "本场"),
+                }
+            )
+        cursor += timedelta(seconds=PEAK_STEP_SECONDS)
+
+    selected: list[dict[str, Any]] = []
+    for cand in sorted(candidates, key=lambda c: (-c["unique"], -c["messages"], c["start"])):
+        center = cand["start"] + timedelta(seconds=PEAK_WINDOW_SECONDS / 2)
+        if any(
+            abs((center - (s["start"] + timedelta(seconds=PEAK_WINDOW_SECONDS / 2))).total_seconds())
+            < PEAK_MIN_GAP_SECONDS
+            for s in selected
+        ):
+            continue
+        selected.append(cand)
+        if len(selected) >= PEAK_TOP_N:
+            break
+    return [
+        {
+            "start": c["start"].strftime("%H:%M:%S"),
+            "end": c["end"].strftime("%H:%M:%S"),
+            "start_full": c["start"].strftime("%Y-%m-%d %H:%M:%S"),
+            "end_full": c["end"].strftime("%Y-%m-%d %H:%M:%S"),
+            "unique": c["unique"],
+            "messages": c["messages"],
+            "session_label": c["session_label"],
+        }
+        for c in selected
+    ]
 
 
 def _load_raw_gifts(
@@ -123,6 +277,7 @@ def _load_raw_gifts(
                     {
                         "date": ts[:10],
                         "session_date": session,
+                        "session_id": path.stem,
                         "user_id": uid,
                         "gift_name": name,
                         "unit": unit,
@@ -151,6 +306,7 @@ def _load_raw_gifts(
                     "group_id": "",
                     "visible": 1 if unit * count > 90 else 0,
                     "session_date": session,
+                    "session_id": path.stem,
                 }
                 key = f"m|{session}|{msg_id}|{uid}"
                 old = result.get(key)
@@ -173,6 +329,7 @@ def _load_raw_gifts(
                 "group_id": gid,
                 "visible": 1 if item["unit"] * count > 90 else 0,
                 "session_date": item["session_date"],
+                "session_id": item.get("session_id", ""),
             }
             key = f"g|{item['session_date']}|{gid}|{item['user_id']}"
             old = result.get(key)
@@ -259,7 +416,7 @@ def load_messages_from_logs(
         try:
             with path.open("r", encoding="utf-8-sig", newline="") as fh:
                 for raw in csv.DictReader(fh):
-                    row = _normalize(raw, session)
+                    row = _normalize(raw, session, path.stem)
                     if not row:
                         continue
                     if row["user_id"]:
@@ -296,6 +453,8 @@ def load_messages_from_logs(
             gift_best[key] = row
 
     rows = list(chat_best.values()) + list(gift_best.values())
+    rows = _filter_lottery(rows)
+    _mark_duplicate_chats(rows)
     deleted_days = load_deleted_days(log_dir, live_id)
     if deleted_days:
         rows = [r for r in rows if r["session_date"] not in deleted_days]
@@ -656,6 +815,26 @@ h1 { margin: 10px 0 12px; font-size: clamp(34px, 5vw, 56px); line-height: 1.12; 
 .day-meta { margin: -8px 0 18px; color: var(--muted); font-size: 13px; }
 .day-meta b { color: var(--text); font-weight: 650; }
 .layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; }
+.peaks-card { margin: 0 0 16px; }
+.peak-note { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 11px 18px 0; color: var(--muted); font-size: 11px; }
+.peak-note b { color: var(--gold); font-variant-numeric: tabular-nums; }
+.dup-toggle { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; color: var(--text); }
+.dup-toggle input { accent-color: var(--gold); }
+.peak-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; padding: 12px 18px 18px; }
+.peak-card {
+  display: flex; align-items: flex-start; gap: 8px; text-align: left; cursor: pointer;
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 9px;
+  padding: 10px; color: var(--text); font-family: inherit;
+}
+.peak-card:hover, .peak-card.active { border-color: var(--gold); background: #211d15; }
+.peak-rank { color: var(--gold); font-family: var(--mono); font-size: 11px; padding-top: 2px; }
+.peak-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.peak-body b { font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.peak-body span { color: var(--muted); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.peak-body strong { color: var(--text); }
+.dup-row { opacity: .62; }
+.btn.ghost { background: transparent; color: var(--muted); }
+
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; }
 .card-head { padding: 15px 18px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .card-head h2 { margin: 0; font-size: 16px; }
@@ -790,7 +969,7 @@ function csvCell(value) {
   return (s.includes('"') || s.includes(",") || s.includes(String.fromCharCode(10))) ? '"' + s.replace(/"/g, '""') + '"' : s;
 }
 function downloadAllCsv() {
-  const cols = ["received_at","session_date","kind","user_id","nickname","fans_club_level","pay_level","content","gift_name","gift_count","diamonds"];
+  const cols = ["received_at","session_date","session_id","kind","user_id","nickname","fans_club_level","pay_level","content","gift_name","gift_count","diamonds","dup_excluded"];
   const lines = [cols.join(",")];
   for (const r of ALL_DATA) lines.push(cols.map(c => csvCell(r[c])).join(","));
   const blob = new Blob([String.fromCharCode(0xFEFF) + lines.join(String.fromCharCode(10))], {type: "text/csv;charset=utf-8"});
@@ -828,15 +1007,28 @@ DAY_TEMPLATE = """<!doctype html>
     <div class="stat"><div class="label">付费人数</div><div class="value">__PAYERS__</div><div class="sub">当天送过礼物</div></div>
   </div>
 
+  <div class="card peaks-card">
+    <div class="card-head">
+      <h2>流速峰值 Top 10</h2>
+      <span class="hint">只统计弹幕 · 30 秒窗口 · 按独立发送人数</span>
+    </div>
+    <div class="peak-note">
+      <span>已排除重复文本弹幕 <b>__DUP_COUNT__</b> 条（30 秒内同文本 ≥8 次；纯标点/短句不参与）；抽奖关键词弹幕已直接过滤。峰值按排除重复后的弹幕计算。</span>
+      <label class="dup-toggle"><input type="checkbox" id="show-dup"> 显示重复弹幕</label>
+      <button class="btn ghost" id="clear-peak" style="display:none">清除峰值筛选</button>
+    </div>
+    <div id="peaks" class="peak-grid"></div>
+  </div>
+
   <div class="layout">
     <div class="card">
       <div class="card-head"><h2>全部消息</h2><span class="hint">按时间升序 · 支持搜索</span></div>
       <div class="toolbar">
         <div class="tabs">
-          <button class="tab active" data-kind="all">全部 <b>__MESSAGES__</b></button>
-          <button class="tab" data-kind="chat">弹幕 <b>__CHAT__</b></button>
-          <button class="tab" data-kind="gift">礼物 <b>__GIFTS__</b></button>
-          <button class="tab" data-kind="entry">入场 <b>__ENTRY__</b></button>
+          <button class="tab active" data-kind="all">全部 <b id="tab-all">__MESSAGES__</b></button>
+          <button class="tab" data-kind="chat">弹幕 <b id="tab-chat">__CHAT__</b></button>
+          <button class="tab" data-kind="gift">礼物 <b id="tab-gift">__GIFTS__</b></button>
+          <button class="tab" data-kind="entry">入场 <b id="tab-entry">__ENTRY__</b></button>
         </div>
         <input id="search" class="search" placeholder="搜索昵称 / 用户 ID / 内容 / 礼物…">
         <button class="btn" id="export-day">导出当日 CSV</button>
@@ -861,15 +1053,20 @@ DAY_TEMPLATE = """<!doctype html>
 
   <div class="foot">
     <b>说明</b>：时间取自采集端本地时间；礼物“钻石”为服务端下发的单价 × 数量。<br>
+    <b>流速峰值</b>：仅统计弹幕，30 秒窗口，按独立发送人数排序，峰值间隔至少 5 分钟；抽奖关键词已过滤，重复文本默认排除。<br>
     <b>提示</b>：搜索支持用户 ID、昵称、弹幕内容和礼物名；礼物榜展示前 30 名。
   </div>
 </div>
 <script>
 const DATA = __DATA__;
 const BOARD = __BOARD__;
+const PEAKS = __PEAKS__;
+const DUP_COUNT = __DUP_COUNT__;
 const BADGE = "__BADGE_TEXT__";
 let activeKind = "all";
 let query = "";
+let showDup = false;
+let peakFilter = null;
 
 function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({
@@ -894,16 +1091,35 @@ function lvCell(n, hot) {
   if (!n) return `<span class="lv">-</span>`;
   return `<span class="lv ${hot ? "hot" : ""}">Lv.${n}</span>`;
 }
+function updateTabCounts() {
+  const counts = {all: DATA.length, chat: 0, gift: 0, entry: 0};
+  for (const r of DATA) {
+    if (r.kind === "chat") counts.chat++;
+    else if (r.kind === "gift") counts.gift++;
+    else if (r.kind === "entry") counts.entry++;
+  }
+  const chatVisible = showDup ? counts.chat : counts.chat - DUP_COUNT;
+  const allVisible = showDup ? counts.all : counts.all - DUP_COUNT;
+  document.getElementById("tab-all").textContent = fmt(allVisible);
+  document.getElementById("tab-chat").textContent = fmt(chatVisible);
+  document.getElementById("tab-gift").textContent = fmt(counts.gift);
+  document.getElementById("tab-entry").textContent = fmt(counts.entry);
+}
 function renderRows() {
   const q = query.trim().toLowerCase();
   const rows = DATA.filter(r => {
+    if (!showDup && r.dup_excluded) return false;
     if (activeKind !== "all" && r.kind !== activeKind) return false;
+    if (peakFilter) {
+      const t = r.received_at || "";
+      if (t < peakFilter.start_full || t > peakFilter.end_full) return false;
+    }
     if (!q) return true;
     return [r.nickname, r.user_id, r.content, r.gift_name].join(" ").toLowerCase().includes(q);
   });
   const tbody = document.getElementById("rows");
   tbody.innerHTML = rows.map(r => `
-    <tr>
+    <tr class="${r.dup_excluded ? "dup-row" : ""}">
       <td class="time">${esc(r.received_at.slice(11, 19))}</td>
       <td>${typeBadge(r.kind)}</td>
       <td class="uid">${esc(r.user_id || "-")}</td>
@@ -915,6 +1131,36 @@ function renderRows() {
       <td class="diamond">${r.kind === "gift" ? fmt(r.diamonds) : ""}</td>
     </tr>`).join("");
   document.getElementById("empty").style.display = rows.length ? "none" : "block";
+  updateTabCounts();
+}
+function renderPeaks() {
+  const box = document.getElementById("peaks");
+  if (!PEAKS.length) {
+    box.innerHTML = `<div class="empty">还没有足够的弹幕计算峰值</div>`;
+    return;
+  }
+  box.innerHTML = PEAKS.map((p, i) => `
+    <button class="peak-card ${peakFilter && peakFilter.start_full === p.start_full ? "active" : ""}" data-start="${esc(p.start)}" data-end="${esc(p.end)}" data-start-full="${esc(p.start_full)}" data-end-full="${esc(p.end_full)}">
+      <span class="peak-rank">#${i + 1}</span>
+      <span class="peak-body">
+        <b>${esc(p.start)}–${esc(p.end)}</b>
+        <span>${esc(p.session_label)} · 独立 <strong>${fmt(p.unique)}</strong> 人 · ${fmt(p.messages)} 条</span>
+      </span>
+    </button>`).join("");
+  box.querySelectorAll(".peak-card").forEach(card => {
+    card.addEventListener("click", () => {
+      const startFull = card.dataset.startFull, endFull = card.dataset.endFull;
+      if (peakFilter && peakFilter.start_full === startFull) {
+        peakFilter = null;
+      } else {
+        peakFilter = {start_full: startFull, end_full: endFull};
+      }
+      document.getElementById("clear-peak").style.display = peakFilter ? "" : "none";
+      renderPeaks();
+      renderRows();
+      document.querySelector(".layout").scrollIntoView({behavior: "smooth", block: "start"});
+    });
+  });
 }
 function renderBoard() {
   const box = document.getElementById("board");
@@ -950,15 +1196,26 @@ document.getElementById("search").addEventListener("input", e => {
   query = e.target.value;
   renderRows();
 });
+document.getElementById("show-dup").addEventListener("change", e => {
+  showDup = e.target.checked;
+  renderRows();
+});
+document.getElementById("clear-peak").addEventListener("click", () => {
+  peakFilter = null;
+  document.getElementById("clear-peak").style.display = "none";
+  renderPeaks();
+  renderRows();
+});
 renderRows();
 renderBoard();
+renderPeaks();
 
 function csvCell(value) {
   const s = String(value == null ? "" : value);
   return (s.includes('"') || s.includes(",") || s.includes(String.fromCharCode(10))) ? '"' + s.replace(/"/g, '""') + '"' : s;
 }
 function downloadDayCsv() {
-  const cols = ["received_at","session_date","kind","user_id","nickname","fans_club_level","pay_level","content","gift_name","gift_count","diamonds"];
+  const cols = ["received_at","session_date","session_id","kind","user_id","nickname","fans_club_level","pay_level","content","gift_name","gift_count","diamonds","dup_excluded"];
   const lines = [cols.join(",")];
   for (const r of DATA) lines.push(cols.map(c => csvCell(r[c])).join(","));
   const blob = new Blob([String.fromCharCode(0xFEFF) + lines.join(String.fromCharCode(10))], {type: "text/csv;charset=utf-8"});
@@ -1064,6 +1321,8 @@ def _render_day(
 ) -> str:
     stats = _day_stats(rows)
     board = _leaderboard(rows)
+    peaks = analyze_peaks(rows)
+    dup_count = sum(1 for r in rows if r.get("dup_excluded"))
     badge_text = "模拟数据" if mock else "真实记录"
     page = DAY_TEMPLATE
     replacements = {
@@ -1080,6 +1339,8 @@ def _render_day(
         "__PAYERS__": f"{stats['payers']:,}",
         "__DATA__": _json_for_script(rows),
         "__BOARD__": _json_for_script(board),
+        "__PEAKS__": _json_for_script(peaks),
+        "__DUP_COUNT__": str(dup_count),
         "__ROOM_META__": _room_meta_html(meta or {}, live_id),
         "__DAY_RANGE__": html.escape(_session_range(rows)),
     }
