@@ -29,6 +29,7 @@ import webbrowser
 from datetime import datetime, timedelta
 from pathlib import Path
 from tkinter import messagebox, ttk
+from types import SimpleNamespace
 
 import websocket
 
@@ -99,6 +100,10 @@ class DanmakuClient(DouyinLiveWebFetcher):
         self.events = events
         self._stop = threading.Event()
         self._seen: set[tuple[str, str]] = set()
+        # 昵称 -> User，用于 RoomMessage 这类没有 user 字段的付费通知。
+        self._nick_users: dict[str, object] = {}
+        # 同一条付费通知可能同时出现在 FansclubMessage / RoomMessage 里。
+        self._membership_seen: dict[str, float] = {}
         self._gift_repeat: dict[int, int] = {}
         self._gift_group_total: dict[int, int] = {}
         self._gift_group_emitted: dict[int, int] = {}
@@ -402,6 +407,11 @@ class DanmakuClient(DouyinLiveWebFetcher):
         for msg in response.messages_list:
             handler = handlers.get(msg.method)
             if not handler:
+                # 会员/星守护有时走未建模的消息类型；只在原文含关键词时兜底。
+                try:
+                    self._parse_unknown_membership(msg.method, msg.payload)
+                except Exception:
+                    pass
                 continue
             try:
                 handler(msg.payload)
@@ -413,6 +423,7 @@ class DanmakuClient(DouyinLiveWebFetcher):
         user = message.user
         if not user or (not user.id and not user.nick_name):
             return
+        self._remember_user(user)
         msg_id = str(message.common.msg_id or "")
         if not self._once("chat", msg_id):
             return
@@ -440,6 +451,7 @@ class DanmakuClient(DouyinLiveWebFetcher):
         user = message.user
         if not user or not user.id:
             return
+        self._remember_user(user)
         msg_id = str(message.common.msg_id or "")
         if not self._once("chat", msg_id):
             return
@@ -465,6 +477,7 @@ class DanmakuClient(DouyinLiveWebFetcher):
         user = message.user
         if not user or not user.id:
             return
+        self._remember_user(user)
         club = user.fans_club.data if user.fans_club else None
         level = int(club.level or 0) if club else 0
         pay_level = int(user.pay_grade.level or 0) if user.pay_grade else 0
@@ -518,6 +531,7 @@ class DanmakuClient(DouyinLiveWebFetcher):
         gift = message.gift
         if not user or not user.id or not gift or not gift.name:
             return
+        self._remember_user(user)
         msg_id = str(message.common.msg_id or "")
         repeat = int(message.repeat_count or 0)
         combo = int(message.combo_count or 0)
@@ -637,8 +651,105 @@ class DanmakuClient(DouyinLiveWebFetcher):
             self._online = total
         self._emit_summary()
 
+    def _remember_user(self, user):
+        """缓存昵称到 User；RoomMessage 没有 user 字段，只能靠昵称回查。"""
+        if not user:
+            return
+        nick = str(getattr(user, "nick_name", "") or "").strip()
+        if not nick:
+            return
+        self._nick_users[nick] = user
+        if len(self._nick_users) > 800:
+            for old in list(self._nick_users)[:200]:
+                self._nick_users.pop(old, None)
+
+    @staticmethod
+    def _notice_user(nick: str):
+        nick = str(nick or "").strip(" \t\r\n：:，,。.!！[]【】()（）")
+        if not nick:
+            return None
+        return SimpleNamespace(
+            id=f"notice:{nick}",
+            nick_name=nick,
+            fans_club=None,
+            pay_grade=None,
+        )
+
+    def _find_notice_user(self, text: str):
+        """从「恭喜 XXX 开通了…」里找昵称，优先命中已缓存的 User。"""
+        text = str(text or "").strip()
+        if not text:
+            return None
+        match = re.search(
+            r"恭喜\s*(.+?)\s*(?:成为|开通|加入|成功|续费|升级|的)", text
+        )
+        if match:
+            nick = match.group(1).strip()
+            return self._nick_users.get(nick) or self._notice_user(nick)
+        # 没有「恭喜」时，尝试取「XXX 开通了…」里的昵称。
+        loose = re.search(
+            r"([^\s，,：:。.!！]{2,24})\s*(?:开通|续费|加入|成为)", text
+        )
+        if loose:
+            nick = re.sub(r"^(?:恭喜|欢迎)", "", loose.group(1)).strip()
+            return self._nick_users.get(nick) or self._notice_user(nick)
+        for nick in sorted(self._nick_users, key=len, reverse=True):
+            if nick and nick in text:
+                return self._nick_users[nick]
+        return None
+
+    def _parse_unknown_membership(self, method: str, payload: bytes):
+        """未建模消息里偶尔夹带会员/星守护提示，按原文关键词兜底。"""
+        try:
+            raw = payload.decode("utf-8", errors="ignore")
+        except Exception:
+            return
+        if not any(
+            key in raw
+            for key in ("星守护", "会员", "加入粉丝团", "加入了粉丝团")
+        ):
+            return
+        content = ""
+        user = None
+        try:
+            if "Fansclub" in method:
+                message = FansclubMessage().parse(payload)
+                content = message.content
+                user = message.user
+            else:
+                message = RoomMessage().parse(payload)
+                content = message.content
+        except Exception:
+            return
+        if not content:
+            return
+        if user is None:
+            user = self._notice_member_user(content)
+        self._remember_user(user)
+        uid = str(getattr(user, "id", "") or "")
+        # 未知消息没有可靠 msg_id：用内容 + 用户 + 10 秒窗口去重。
+        dedupe_id = f"notice-{uid}-{abs(hash(content))}-{int(time.time() // 10)}"
+        self._record_membership(
+            content=content,
+            msg_id=dedupe_id,
+            user=user,
+        )
+
+    def _notice_member_user(self, text: str):
+        user = self._find_notice_user(text)
+        if user:
+            return user
+        if any(
+            key in text
+            for key in ("星守护", "会员", "加入粉丝团", "加入了粉丝团")
+        ):
+            # 实在没有昵称也先记一笔，避免整条付费通知被静默丢掉。
+            return self._notice_user("直播间通知")
+        return None
+
     def _parseFansclubMsg(self, payload):
         message = FansclubMessage().parse(payload)
+        self._remember_user(message.user)
         self._record_membership(
             content=message.content,
             msg_id=str(message.common_info.msg_id or ""),
@@ -650,7 +761,7 @@ class DanmakuClient(DouyinLiveWebFetcher):
         self._record_membership(
             content=message.content,
             msg_id=str(message.common.msg_id or ""),
-            user=None,
+            user=self._notice_member_user(message.content),
         )
 
     @staticmethod
@@ -663,8 +774,9 @@ class DanmakuClient(DouyinLiveWebFetcher):
         if months:
             return base * max(1, int(months.group(1)))
         days = re.search(r"(\d+)\s*天", text)
-        if days:
+        if days and "星守护" not in text and "会员" not in text:
             return max(1, round(base * int(days.group(1)) / 30))
+        # 星守护/会员都是按月/31 天订阅，文案里的「31天」不改变单价。
         return base
 
     def _record_membership(self, content: str, msg_id: str, user):
@@ -672,7 +784,17 @@ class DanmakuClient(DouyinLiveWebFetcher):
         text = str(content or "").strip()
         label = ""
         price = 0
-        if "加入粉丝团" in text or "加入了粉丝团" in text:
+        # 普通粉丝团：可能是「加入了粉丝团」，也可能是「恭喜 X 成为第 N 名 Y 成员」。
+        fan_join = (
+            "加入粉丝团" in text
+            or "加入了粉丝团" in text
+            or (
+                "成为第" in text
+                and "成员" in text
+                and ("恭喜" in text or "欢迎" in text)
+            )
+        )
+        if fan_join and not any(name in text for name in MEMBERSHIP_PRICES):
             label = "加入粉丝团"
             price = FANCLUB_JOIN_PRICE
         else:
@@ -683,6 +805,12 @@ class DanmakuClient(DouyinLiveWebFetcher):
                     break
         if not label or not price or not user or not user.id:
             return
+        # FansclubMessage 与 RoomMessage 可能各推一条同样的通知，5 秒内按文案去重。
+        dedupe = f"{label}|{text}"
+        now = time.monotonic()
+        if now - self._membership_seen.get(dedupe, 0.0) < 5:
+            return
+        self._membership_seen[dedupe] = now
         if not self._once("gift", msg_id):
             return
         club = user.fans_club.data if user.fans_club else None

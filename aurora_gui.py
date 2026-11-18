@@ -3,7 +3,7 @@
 """弹幕助手 · Aurora Dark
 
 单一弹幕流：聊天 + 粉丝团 Lv.15+ 入场混排；
-底部可滚动礼物栏，默认显示最近 5 条 >90 钻礼物，格式为：
+底部可滚动礼物栏，默认显示最近 8 条 >90 钻礼物，格式为：
     消费Lv.26 粉丝Lv.16 小番茄 送出了【跑车】x1，价值1,200钻
 界面不显示时间戳，但 CSV / 导出网站仍保留完整时间。
 """
@@ -409,7 +409,7 @@ class AuroraApp:
             gift_head, text="GIFT FEED", bg=CARD, fg=MAGENTA, font=(FONT, 9, "bold")
         ).pack(side="left")
         tk.Label(
-            gift_head, text="礼物 · 最近 5 条", bg=CARD, fg=FG, font=(FONT, 14, "bold")
+            gift_head, text="礼物 · 最近 8 条", bg=CARD, fg=FG, font=(FONT, 14, "bold")
         ).pack(side="left", padx=(6, 0))
         self.gift_badge = tk.Label(
             gift_head, text="0", bg="#2a1020", fg="#ffb4d6", font=(FONT, 9, "bold"),
@@ -420,7 +420,7 @@ class AuroraApp:
         gift_body = tk.Frame(gift_card, bg=CARD)
         gift_body.pack(fill="x", padx=8, pady=(0, 8))
         self.gift_canvas = tk.Canvas(
-            gift_body, bg=CARD, height=240, highlightthickness=0, borderwidth=0, yscrollincrement=30
+            gift_body, bg=CARD, height=384, highlightthickness=0, borderwidth=0, yscrollincrement=30
         )
         self.gift_scroll = tk.Scrollbar(
             gift_body, orient="vertical", command=self.gift_canvas.yview, width=9,
@@ -1275,7 +1275,7 @@ class AuroraApp:
         row = tk.Frame(
             self.gift_list,
             bg=bg,
-            height=48,
+            height=40,
             highlightbackground="#4a1d35",
             highlightthickness=1,
         )
@@ -1283,7 +1283,7 @@ class AuroraApp:
         row.pack_propagate(False)
         row.grid_columnconfigure(0, weight=1)
         left = tk.Frame(row, bg=bg)
-        left.grid(row=0, column=0, sticky="ew", padx=(8, 0), pady=7)
+        left.grid(row=0, column=0, sticky="ew", padx=(8, 0), pady=3)
 
         nick = tk.Label(
             left,
@@ -1316,7 +1316,7 @@ class AuroraApp:
             anchor="e",
             padx=0,
         )
-        mult.grid(row=0, column=1, sticky="e", padx=(3, 8), pady=7)
+        mult.grid(row=0, column=1, sticky="e", padx=(3, 8), pady=3)
 
         self._bind_gift_wheel(row)
         return {
