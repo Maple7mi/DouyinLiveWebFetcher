@@ -175,6 +175,7 @@ def login_and_get_cookie(
         f"--remote-debugging-port={port}",
         f"--user-data-dir={profile}",
         "--remote-allow-origins=*",
+        "--keep-alive-for-test",
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-features=msEdgeSidebarV2",
@@ -189,7 +190,7 @@ def login_and_get_cookie(
     cdp = None
     try:
         if status_cb:
-            status_cb("登录窗口已打开，请扫码或登录抖音…登录成功后先不要关闭 Edge，等程序提示成功")
+            status_cb("登录窗口已打开，请扫码或登录抖音…登录成功后可直接关闭 Edge 窗口")
         # 先确保页面已经起来，再连浏览器级 CDP；页面跳转不会影响浏览器级连接。
         _wait_for_target(port)
         try:
@@ -221,7 +222,7 @@ def login_and_get_cookie(
             now = time.time()
             if status_cb and now - last_report > 5:
                 last_report = now
-                status_cb("等待登录中…请在 Edge 窗口里扫码，登录成功后不要关闭窗口")
+                status_cb("等待登录中…请在 Edge 窗口里扫码，登录成功后会自动读取，可关闭 Edge 窗口")
             time.sleep(0.6)
         raise BrowserLoginError("登录超时，请重新点击登录。")
     finally:
