@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import csv
 import gzip
+import hashlib
 import json
 import os
 import queue
@@ -24,6 +25,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import urllib.request
 import traceback
 import webbrowser
 from datetime import datetime, timedelta
@@ -73,6 +75,70 @@ MEMBERSHIP_PRICES = {
 }
 FANCLUB_JOIN_PRICE = 1
 
+# badge 诊断：额外写一份“payload 里到底有哪些徽章字段”，用于定位 0 字节问题。
+# 只在测试包里长期开着；设 DANMAKU_BADGE_PROBE=0 可关掉。
+BADGE_PROBE_ENABLED = os.environ.get("DANMAKU_BADGE_PROBE", "0") == "1"
+# 原始消息转储（all_msgs / unknown_msgs）只在排查时开，稳定版默认关闭。
+MSG_DUMP_ENABLED = os.environ.get("DANMAKU_MSG_DUMP", "0") == "1"
+BADGE_PROBE_LIMIT = 20000
+
+
+def _image_url(img) -> str:
+    urls = getattr(img, "url_list_list", None) or []
+    return str(urls[0]) if urls else ""
+
+
+def _image_label(img) -> str:
+    content = getattr(img, "content", None)
+    for value in (
+        getattr(content, "name", None),
+        getattr(content, "alternative_text", None),
+        getattr(img, "uri", None),
+    ):
+        if value:
+            return str(value)
+    return ""
+
+
+def _badge_items(user) -> list[dict]:
+    """把用户身上的徽章图片压平成可显示的标签；不猜测身份。"""
+    items: list[dict] = []
+    seen: set[str] = set()
+
+    def add(img, source: str):
+        if not img:
+            return
+        url = _image_url(img)
+        label = _image_label(img)
+        key = url or label
+        if not key or key in seen:
+            return
+        seen.add(key)
+        items.append(
+            {
+                "source": source,
+                "label": label,
+                "url": url,
+                "uri": str(getattr(img, "uri", "") or ""),
+                "height": int(getattr(img, "height", 0) or 0),
+            }
+        )
+
+    for img in getattr(user, "badge_image_list", None) or []:
+        add(img, "badge")
+    for img in getattr(user, "real_time_icons_list", None) or []:
+        add(img, "icon")
+    add(getattr(user, "medal", None), "medal")
+    add(getattr(user, "avatar_border", None), "border")
+
+    club = getattr(user, "fans_club", None)
+    club_data = getattr(club, "data", None)
+    club_badge = getattr(club_data, "badge", None)
+    icons = getattr(club_badge, "icons", None) or {}
+    for img in icons.values():
+        add(img, "club")
+    return items
+
 
 def app_dir() -> Path:
     """可写文件（cookie/logs）放在 exe 或源码目录旁边。"""
@@ -90,6 +156,32 @@ def fmt_int(value) -> str:
         return f"{int(value):,}"
     except Exception:
         return str(value or "--")
+
+
+EMOJI_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+)
+
+
+def _emoji_image_url(message) -> str:
+    """Best-effort URL for a Douyin emoji sticker inside EmojiChatMessage."""
+    try:
+        content = getattr(message, "emoji_content", None)
+        pieces = getattr(content, "pieces_list", None) if content is not None else None
+        for piece in pieces or []:
+            value = getattr(piece, "image_value", None)
+            image = getattr(value, "image", None) if value is not None else None
+            urls = getattr(image, "url_list_list", None) if image is not None else None
+            if urls:
+                return str(urls[0])
+        bg = getattr(message, "background_image", None)
+        urls = getattr(bg, "url_list_list", None) if bg is not None else None
+        if urls:
+            return str(urls[0])
+    except Exception:
+        pass
+    return ""
 
 
 class DanmakuClient(DouyinLiveWebFetcher):
@@ -258,6 +350,18 @@ class DanmakuClient(DouyinLiveWebFetcher):
         self._gift_raw = (logs / f"gifts_raw_{self.live_id}_{stamp}.jsonl").open(
             "w", encoding="utf-8"
         )
+        self._badge_raw = (logs / f"badge_samples_{self.live_id}_{stamp}.jsonl").open(
+            "w", encoding="utf-8"
+        )
+        self._probe_count = 0
+        self._badge_probe_file = None
+        if BADGE_PROBE_ENABLED:
+            try:
+                self._badge_probe_file = (
+                    logs / f"badge_probe_{self.live_id}_{stamp}.jsonl"
+                ).open("w", encoding="utf-8")
+            except Exception:
+                self._badge_probe_file = None
 
     def _capture_room_meta(self):
         """记录主播昵称/房间号，供导出网站读取；失败不影响采集。"""
@@ -277,7 +381,12 @@ class DanmakuClient(DouyinLiveWebFetcher):
 
     def _close_logs(self):
         self._save_session_state(force=True)
-        for handle in (self._csv_file, self._gift_raw):
+        for handle in (
+            self._csv_file,
+            self._gift_raw,
+            self._badge_raw,
+            getattr(self, "_badge_probe_file", None),
+        ):
             try:
                 if handle:
                     handle.close()
@@ -293,6 +402,146 @@ class DanmakuClient(DouyinLiveWebFetcher):
             path.parent.mkdir(exist_ok=True)
             with path.open("a", encoding="utf-8") as fh:
                 fh.write(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {text}\n")
+        except Exception:
+            pass
+
+    def _log_badge_sample(self, kind: str, user, data: dict):
+        """记录原始徽章字段，供识别房管/会员/星守护的真实图片。"""
+        items: list[dict] = []
+        items_error = ""
+        try:
+            items = _badge_items(user)
+        except Exception as exc:
+            items_error = repr(exc)
+
+        try:
+            level = int(data.get("fans_club_level") or 0)
+            pay = int(data.get("pay_level") or 0)
+        except (TypeError, ValueError):
+            level = pay = 0
+
+        skipped = not items and level < 20 and pay < 40
+        self._badge_probe(kind, data, user, items, skipped, items_error)
+        if skipped:
+            return
+
+        try:
+            club = getattr(user, "fans_club", None)
+            club_data = getattr(club, "data", None)
+            club_badge = getattr(club_data, "badge", None)
+            pay_grade = getattr(user, "pay_grade", None)
+            avatar_border = getattr(user, "avatar_border", None)
+            record = {
+                "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "kind": kind,
+                "msg_id": data.get("msg_id", ""),
+                "user_id": data.get("user_id", ""),
+                "nickname": data.get("nickname", ""),
+                "fans_club_level": level,
+                "pay_level": pay,
+                "content": data.get("content", ""),
+                "badges": items,
+                "club_status": int(getattr(club_data, "user_fans_club_status", 0) or 0),
+                "club_title": str(getattr(club_badge, "title", "") or ""),
+                "pay_grade_name": str(getattr(pay_grade, "name", "") or ""),
+                "pay_grade_describe": str(getattr(pay_grade, "grade_describe", "") or ""),
+                "avatar_border": _image_label(avatar_border) if avatar_border else "",
+                "avatar_border_url": _image_url(avatar_border) if avatar_border else "",
+                "special_id": str(getattr(user, "special_id", "") or ""),
+                "verified": bool(getattr(user, "verified", False)),
+            }
+            raw = getattr(self, "_badge_raw", None)
+            if raw:
+                raw.write(json.dumps(record, ensure_ascii=False) + "\n")
+                raw.flush()
+        except Exception as exc:
+            self._debug(f"badge sample failed: {exc!r}")
+
+    def _badge_probe(self, kind, data, user, items, skipped: bool, error: str = ""):
+        """把“payload 里到底有哪些徽章字段”写进 badge_probe_*.jsonl。
+
+        和 badge_samples 的区别：这里**不做任何过滤**，每条都记，
+        因此可以用它区分「服务端没下发」和「本地没取到」。
+        """
+        raw = getattr(self, "_badge_probe_file", None)
+        if not raw:
+            return
+        count = getattr(self, "_probe_count", 0)
+        if count >= BADGE_PROBE_LIMIT:
+            return
+        try:
+
+            def _seq_len(name: str) -> int:
+                value = getattr(user, name, None)
+                if value is None:
+                    return -1
+                try:
+                    return len(value)
+                except TypeError:
+                    return -1
+
+            def _image_hint(name: str) -> str:
+                value = getattr(user, name, None)
+                if value is None:
+                    return ""
+                try:
+                    return _image_label(value)[:60]
+                except Exception:
+                    return "?"
+
+            club = getattr(user, "fans_club", None)
+            club_data = getattr(club, "data", None) if club is not None else None
+            club_badge = (
+                getattr(club_data, "badge", None) if club_data is not None else None
+            )
+            icons = getattr(club_badge, "icons", None) if club_badge is not None else None
+            if icons is None:
+                icon_keys: list[str] = []
+                icon_n = -1
+            else:
+                try:
+                    icon_keys = [str(k)[:40] for k in list(icons.keys())[:4]]
+                except Exception:
+                    icon_keys = []
+                try:
+                    icon_n = len(icons)
+                except TypeError:
+                    icon_n = -1
+
+            first_label = ""
+            for img in getattr(user, "badge_image_list", None) or []:
+                first_label = _image_label(img)[:60]
+                if first_label:
+                    break
+
+            record = {
+                "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "kind": kind,
+                "msg_id": data.get("msg_id", ""),
+                "user_id": data.get("user_id", ""),
+                "nickname": data.get("nickname", ""),
+                "user_type": type(user).__name__,
+                "fans_club_level": int(data.get("fans_club_level") or 0),
+                "pay_level": int(data.get("pay_level") or 0),
+                "items": len(items),
+                "badge_image_list": _seq_len("badge_image_list"),
+                "real_time_icons_list": _seq_len("real_time_icons_list"),
+                "medal": _image_hint("medal"),
+                "avatar_border": _image_hint("avatar_border"),
+                "club_icons": icon_n,
+                "club_icon_keys": icon_keys,
+                "club_status": int(
+                    getattr(club_data, "user_fans_club_status", 0) or 0
+                )
+                if club_data is not None
+                else 0,
+                "first_badge_label": first_label,
+                "skipped": bool(skipped),
+                "error": error,
+            }
+            raw.write(json.dumps(record, ensure_ascii=False) + "\n")
+            raw.flush()
+            self._probe_count = count + 1
         except Exception:
             pass
 
@@ -405,8 +654,11 @@ class DanmakuClient(DouyinLiveWebFetcher):
             "WebcastRoomRankMessage": self._parseRankMsg,
         }
         for msg in response.messages_list:
+            self._count_method(msg.method)
+            self._dump_all(msg.method, msg.payload)
             handler = handlers.get(msg.method)
             if not handler:
+                self._dump_unknown(msg.method, msg.payload)
                 # 会员/星守护有时走未建模的消息类型；只在原文含关键词时兜底。
                 try:
                     self._parse_unknown_membership(msg.method, msg.payload)
@@ -417,6 +669,89 @@ class DanmakuClient(DouyinLiveWebFetcher):
                 handler(msg.payload)
             except Exception as exc:
                 self._emit("error", text=f"{msg.method} 解析失败：{exc}")
+
+    def _dump_all(self, method: str, payload: bytes) -> None:
+        """把所有原始消息的类型+可见文本落盘（限 20MB），用于排查漏弹幕。"""
+        if not MSG_DUMP_ENABLED:
+            return
+        try:
+            folder = app_dir() / "logs"
+            folder.mkdir(parents=True, exist_ok=True)
+            path = folder / "all_msgs.jsonl"
+            if path.exists() and path.stat().st_size > 20 * 1024 * 1024:
+                return
+            text = payload.decode("utf-8", "ignore")
+            runs = re.findall(r"[\u4e00-\u9fffa-zA-Z0-9_\-\.\u00b7]{2,}", text)
+            rec = {"ts": time.strftime("%H:%M:%S"), "method": method, "runs": runs[:24]}
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
+    def _dump_unknown(self, method: str, payload: bytes) -> None:
+        """未建模的消息类型落盘，便于定位「某人的弹幕不显示」。"""
+        if not MSG_DUMP_ENABLED:
+            return
+        try:
+            folder = app_dir() / "logs"
+            folder.mkdir(parents=True, exist_ok=True)
+            path = folder / "unknown_msgs.jsonl"
+            if path.exists() and path.stat().st_size > 3 * 1024 * 1024:
+                return
+            text = payload.decode("utf-8", "ignore")
+            runs = re.findall(r"[\u4e00-\u9fffa-zA-Z0-9_\-\.\u00b7]{2,}", text)
+            rec = {
+                "ts": time.strftime("%H:%M:%S"),
+                "method": method,
+                "size": len(payload),
+                "runs": runs[:30],
+            }
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
+    def _count_method(self, method: str) -> None:
+        try:
+            counts = getattr(self, "_method_counts", None)
+            if counts is None:
+                counts = {}
+                self._method_counts = counts
+            counts[method] = counts.get(method, 0) + 1
+            total = sum(counts.values())
+            if total % 50 == 0:
+                folder = app_dir() / "logs"
+                folder.mkdir(parents=True, exist_ok=True)
+                (folder / "methods.json").write_text(
+                    json.dumps(counts, ensure_ascii=False, indent=1, sort_keys=True),
+                    encoding="utf-8",
+                )
+        except Exception:
+            pass
+
+    def _cache_emoji(self, url: str) -> str:
+        if not url:
+            return ""
+        try:
+            key = hashlib.sha1(url.encode("utf-8")).hexdigest()[:20]
+        except Exception:
+            return ""
+        folder = app_dir() / "logs" / "emoji_cache"
+        path = folder / f"{key}.png"
+        try:
+            if path.exists() and path.stat().st_size > 0:
+                return str(path)
+            folder.mkdir(parents=True, exist_ok=True)
+            req = urllib.request.Request(url, headers={"User-Agent": EMOJI_UA})
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                blob = resp.read()
+            if not blob:
+                return ""
+            path.write_bytes(blob)
+            return str(path)
+        except Exception as exc:
+            self._debug(f"emoji fetch failed: {exc}")
+            return ""
 
     def _parseChatMsg(self, payload):
         message = ChatMessage().parse(payload)
@@ -432,8 +767,10 @@ class DanmakuClient(DouyinLiveWebFetcher):
         pay_level = int(user.pay_grade.level or 0) if user.pay_grade else 0
         content = (message.content or "").replace("\n", " ").strip()
         if not content:
+            self._dump_unknown("WebcastChatMessage:empty", payload)
             return
         self._msg_count += 1
+        badges = _badge_items(user)
         data = dict(
             msg_id=msg_id,
             user_id=str(user.id),
@@ -441,7 +778,11 @@ class DanmakuClient(DouyinLiveWebFetcher):
             fans_club_level=level,
             pay_level=pay_level,
             content=content,
+            badge_items=badges,
+            badge_names="|".join(str(x.get("label", "")) for x in badges if x.get("label")),
+            badge_count=len(badges),
         )
+        self._log_badge_sample("chat", user, data)
         self._emit("chat", **data)
         self._write_csv("chat", **data)
         self._emit_summary()
@@ -459,6 +800,9 @@ class DanmakuClient(DouyinLiveWebFetcher):
         level = int(club.level or 0) if club else 0
         pay_level = int(user.pay_grade.level or 0) if user.pay_grade else 0
         content = (message.default_content or "[表情]").replace("\n", " ").strip()
+        emoji_url = _emoji_image_url(message)
+        emoji_path = self._cache_emoji(emoji_url)
+        badges = _badge_items(user)
         data = dict(
             msg_id=msg_id,
             user_id=str(user.id),
@@ -466,7 +810,14 @@ class DanmakuClient(DouyinLiveWebFetcher):
             fans_club_level=level,
             pay_level=pay_level,
             content=content,
+            badge_items=badges,
+            badge_names="|".join(str(x.get("label", "")) for x in badges if x.get("label")),
+            badge_count=len(badges),
+            emoji_id=int(getattr(message, "emoji_id", 0) or 0),
+            emoji_url=emoji_url,
+            emoji_path=emoji_path,
         )
+        self._log_badge_sample("emoji", user, data)
         self._msg_count += 1
         self._emit("chat", **data)
         self._write_csv("chat", **data)
@@ -487,6 +838,7 @@ class DanmakuClient(DouyinLiveWebFetcher):
         msg_id = str(message.common.msg_id or "")
         if not self._once("entry", msg_id):
             return
+        badges = _badge_items(user)
         data = dict(
             msg_id=msg_id,
             user_id=str(user.id),
@@ -494,7 +846,11 @@ class DanmakuClient(DouyinLiveWebFetcher):
             fans_club_level=level,
             pay_level=pay_level,
             content="进入直播间",
+            badge_items=badges,
+            badge_names="|".join(str(x.get("label", "")) for x in badges if x.get("label")),
+            badge_count=len(badges),
         )
+        self._log_badge_sample("entry", user, data)
         self._emit("entry", **data)
         self._write_csv("entry", **data)
         self._emit_summary()

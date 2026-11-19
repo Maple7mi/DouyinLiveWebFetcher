@@ -157,6 +157,38 @@ def generateMsToken(length=182):
     return random_str
 
 
+def _extract_room_block(text: str) -> str:
+    """取出 SSR 数据里 `roomStore.roomInfo.room` 这个对象的原始文本。
+
+    页面同时存在多个 `roomInfo`（推荐位、空对象、带 &quot; 转义的副本），
+    只有这个位置才是当前房间。按大括号配对截取，转义字符成对跳过。
+    """
+    keys = (
+        '\\"roomStore\\":{\\"roomInfo\\":{\\"room\\":{',
+        '"roomStore":{"roomInfo":{"room":{',
+    )
+    for key in keys:
+        i = text.find(key)
+        if i < 0:
+            continue
+        start = i + len(key) - 1
+        escaped = key.startswith('\\')
+        depth = 0
+        j = start
+        while j < len(text):
+            ch = text[j]
+            if escaped and ch == '\\':
+                j += 2
+                continue
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    return text[start : j + 1]
+            j += 1
+    return ''
+
 class DouyinLiveWebFetcher:
     
     def __init__(self, live_id, abogus_file='a_bogus.js', cookie=''):
@@ -311,6 +343,10 @@ class DouyinLiveWebFetcher:
     def is_room_live(self) -> bool | None:
         """检查直播间是否在播。
 
+        页面里有大量无关的 ``roomId``（直播中刷新时常见 ``roomId":0``），
+        所以必须只认 ``roomStore.roomInfo.room`` 这一个对象里的 ``status``：
+        2/0 = 直播中，4 = 已结束。
+
         Returns:
             True 正在直播；False 未开播/已结束；None 页面结构无法判断。
         """
@@ -323,21 +359,21 @@ class DouyinLiveWebFetcher:
                 self.live_url + self.live_id, headers=page_headers, timeout=10
             )
             text = page.content.decode("utf-8", errors="ignore")
-            room_info = re.search(
-                r'roomInfo\\":\{\\"room\\":\{.*?\\"status\\":(\d+).*?\\"user_count_str\\":\\"(\d+)\\"',
-                text,
-                re.S,
-            )
-            if room_info:
-                status = int(room_info.group(1))
-                viewers = int(room_info.group(2))
-                if status == 4:
-                    return False
-                if status in (0, 2) and viewers > 0:
-                    return True
-            match = re.search(r'roomId\\?"?\s*:\s*\\?"?(\d+)', text)
+            block = _extract_room_block(text)
+            if block:
+                m = re.search(r'\\?"status\\?":(\d+)', block)
+                if m:
+                    status = int(m.group(1))
+                    if status == 4:
+                        return False
+                    if status in (0, 2):
+                        return True
+            # 兜底：带引号的 roomId 才是真房间号，裸 0 是占位符
+            match = re.search(r'roomId\\*"\s*:\s*\\*"(\d+)\\*"', text)
             if match:
                 return int(match.group(1)) > 0
+            if "user_count_str" in text:
+                return True
         except Exception:
             pass
         return None

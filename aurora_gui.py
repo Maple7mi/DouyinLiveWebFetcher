@@ -11,7 +11,9 @@
 from __future__ import annotations
 
 import ctypes
+import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -48,15 +50,263 @@ GREEN = "#2dd4a7"
 RED = "#ff5d73"
 BLUE = "#5aa9ff"
 FONT = "Microsoft YaHei UI"
+
+
+_BADGE_ORDER = {"房管": 0, "会员": 1, "星守护": 2}
+
+
+def resource_dir() -> Path:
+    """Bundled read-only assets (PyInstaller extracts them to _MEIPASS)."""
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        return Path(base)
+    return Path(__file__).resolve().parent
+
+
+
+# ---------------------------------------------------------------------------
+# 抖音小表情（[名字] token → 本地 PNG）
+# ---------------------------------------------------------------------------
+_EMOJI_RE = re.compile(r"\[[^\[\]\s]{1,12}\]")
+_CONTENT_FONT_PX = 24
+_LINE_H = 36
+_EMOJI_PX = 26
+_DY_EMOJI: dict[str, str] | None = None
+_EMOJI_PIL: dict[str, object] = {}
+_CONTENT_FONT = None
+
+
+_SYMBOL_FONT = None
+_FONTS_DIR = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
+
+
+def _content_font():
+    global _CONTENT_FONT
+    if _CONTENT_FONT is None:
+        try:
+            from PIL import ImageFont
+
+            _CONTENT_FONT = ImageFont.truetype(str(_FONTS_DIR / "msyh.ttc"), _CONTENT_FONT_PX)
+        except Exception:
+            _CONTENT_FONT = False
+    return _CONTENT_FONT or None
+
+
+def _symbol_font():
+    """雅黑缺 ➕ 之类的符号，回退到 Segoe UI Symbol。"""
+    global _SYMBOL_FONT
+    if _SYMBOL_FONT is None:
+        try:
+            from PIL import ImageFont
+
+            for name in ("seguisym.ttf", "seguisym.ttc", "seguiemj.ttf"):
+                try:
+                    _SYMBOL_FONT = ImageFont.truetype(str(_FONTS_DIR / name), _CONTENT_FONT_PX)
+                    break
+                except Exception:
+                    continue
+        except Exception:
+            pass
+    return _SYMBOL_FONT or None
+
+
+_SYMBOL_SUBS = {'\u2795': '\uff0b', '\u2714': '\u221a'}
+
+
+def _needs_symbol(ch: str) -> bool:
+    o = ord(ch)
+    if 0x2190 <= o <= 0x2BFF:
+        return True
+    if 0x1F000 <= o <= 0x1FAFF:
+        return True
+    return o in (0xFE0F, 0x200D, 0x20E3)
+
+
+def _font_for(ch: str):
+    if _needs_symbol(ch):
+        sym = _symbol_font()
+        if sym is not None:
+            return sym
+    return _content_font()
+
+
+def dy_emoji_map() -> dict[str, str]:
+    global _DY_EMOJI
+    if _DY_EMOJI is None:
+        table: dict[str, str] = {}
+        try:
+            raw = (resource_dir() / "assets" / "dy_emoji" / "map.tsv").read_text(
+                encoding="utf-8"
+            )
+            for line in raw.splitlines():
+                if "\t" in line:
+                    name, slug = line.split("\t", 1)
+                    table[name.strip()] = slug.strip()
+        except Exception:
+            table = {}
+        _DY_EMOJI = table
+    return _DY_EMOJI
+
+
+def _emoji_pil(slug: str):
+    from PIL import Image
+
+    cached = _EMOJI_PIL.get(slug)
+    if cached is not None:
+        return cached
+    path = resource_dir() / "assets" / "dy_emoji" / f"{slug}.png"
+    try:
+        im = Image.open(path).convert("RGBA")
+    except Exception:
+        _EMOJI_PIL[slug] = False
+        return None
+    im = im.resize((_EMOJI_PX, _EMOJI_PX), Image.LANCZOS)
+    _EMOJI_PIL[slug] = im
+    return im
+
+
+def has_dy_emoji(text: str) -> bool:
+    table = dy_emoji_map()
+    if not table:
+        return False
+    for m in _EMOJI_RE.finditer(text or ""):
+        if m.group(0) in table:
+            return True
+    return False
+
+
+def render_rich_content(text: str, color: str, max_w: int):
+    """把含 [表情] 的弹幕渲染成一张图（文字 + 表情内联），不需要时返回 None。"""
+    font = _content_font()
+    table = dy_emoji_map()
+    if font is None or not table:
+        return None
+    from PIL import Image, ImageDraw
+
+    items: list[tuple[str, str]] = []
+    pos = 0
+    for m in _EMOJI_RE.finditer(text or ""):
+        tok = m.group(0)
+        slug = table.get(tok)
+        if slug is None:
+            continue
+        if m.start() > pos:
+            items.append(("t", text[pos : m.start()]))
+        items.append(("e", slug))
+        pos = m.end()
+    if pos < len(text or ""):
+        items.append(("t", text[pos:]))
+    if not any(k == "e" for k, _ in items):
+        return None
+
+    width = max(120, int(max_w))
+    lines: list[list[tuple[str, str]]] = [[]]
+    used = 0.0
+    for kind, val in items:
+        if kind == "e":
+            step = _EMOJI_PX + 2
+            if used + step > width and lines[-1]:
+                lines.append([])
+                used = 0.0
+            lines[-1].append(("e", val))
+            used += step
+            continue
+        for ch in val:
+            ch = _SYMBOL_SUBS.get(ch, ch)
+            cw = _font_for(ch).getlength(ch)
+            if used + cw > width and lines[-1]:
+                lines.append([])
+                used = 0.0
+            if lines[-1] and lines[-1][-1][0] == "t":
+                lines[-1][-1] = ("t", lines[-1][-1][1] + ch)
+            else:
+                lines[-1].append(("t", ch))
+            used += cw
+
+    ascent, descent = font.getmetrics()
+    height = max(1, len(lines)) * _LINE_H
+    canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(canvas)
+    y = 0
+    for line in lines:
+        x = 0.0
+        baseline = y + 3 + ascent
+        for kind, val in line:
+            if kind == "e":
+                pic = _emoji_pil(val)
+                if pic is None:
+                    draw.text((x, baseline), f"[{val}]", font=font, fill=color, anchor="ls")
+                    x += font.getlength(f"[{val}]")
+                    continue
+                top = baseline + 2 - pic.height
+                canvas.paste(pic, (int(x), int(top)), pic)
+                x += pic.width + 2
+            else:
+                for ch in val:
+                    ch = _SYMBOL_SUBS.get(ch, ch)
+                    fch = _font_for(ch)
+                    draw.text((x, baseline), ch, font=fch, fill=color, anchor="ls")
+                    x += fch.getlength(ch)
+        y += _LINE_H
+    return canvas
+
+
+
+def _badge_identity(label: str, url: str = "", uri: str = "") -> str | None:
+    label = str(label or "").strip()
+    blob = f"{label} {url or ''} {uri or ''}".lower()
+    if "webcast_admin_badge" in blob:
+        return "房管"
+    if "star_guard" in blob:
+        return "星守护"
+    if "member" in blob or "vip" in blob or "会员" in blob:
+        return "会员"
+    # 粉丝团等级、消费/荣誉等级已有独立列，不再重复塞进「标识」。
+    if any(x in blob for x in ("fansclub", "粉丝团", "new_user_grade", "honor", "荣誉等级")):
+        return None
+    # 星守护等徽章的 content.name 为空时，label 会是 webcast/xxx.png；过滤掉。
+    if not label or "http" in label.lower() or "webcast/" in label or label.lower().endswith(
+        (".png", ".webp", ".gif", ".jpg", ".jpeg")
+    ):
+        return None
+    return label[:6]
+
+
+def _badge_text(event: dict) -> str:
+    found: list[str] = []
+    for item in event.get("badge_items") or []:
+        if not isinstance(item, dict):
+            continue
+        who = _badge_identity(
+            str(item.get("label") or ""),
+            str(item.get("url") or ""),
+            str(item.get("uri") or ""),
+        )
+        if who and who not in found:
+            found.append(who)
+    if not found:
+        # 兼容只有 badge_names 的旧事件 / 历史数据
+        for name in str(event.get("badge_names") or "").split("|"):
+            who = _badge_identity(name)
+            if who and who not in found:
+                found.append(who)
+    if not found:
+        return "—"
+    found.sort(key=lambda x: _BADGE_ORDER.get(x, 9))
+    return "/".join(found)
 APP_NAME = "弹幕助手"
 WINDOW_TITLE = f"{APP_NAME} · Aurora Dark"
-GIFT_LIMIT = 50
+GIFT_LIMIT = 200
 _SINGLE_MUTEX = None
+
+
+def _is_badge_test() -> bool:
+    return getattr(sys, "frozen", False) and "badge-test" in Path(sys.executable).name.lower()
 
 
 def _focus_existing_window() -> bool:
     """Windows 下若已有同名窗口，直接聚焦它，避免重复开窗。"""
-    if sys.platform != "win32":
+    if sys.platform != "win32" or _is_badge_test():
         return False
     try:
         user32 = ctypes.windll.user32
@@ -76,7 +326,10 @@ def _acquire_single_instance() -> bool:
         return True
     try:
         kernel32 = ctypes.windll.kernel32
-        _SINGLE_MUTEX = kernel32.CreateMutexW(None, False, "Local\\DanmakuAssistantAurora")
+        mutex_name = "Local\\DanmakuAssistantAurora"
+        if _is_badge_test():
+            mutex_name += "BadgeTest"
+        _SINGLE_MUTEX = kernel32.CreateMutexW(None, False, mutex_name)
         if not _SINGLE_MUTEX:
             return True
         return kernel32.GetLastError() != 183
@@ -102,6 +355,8 @@ class AuroraApp:
         self.gift_rows: dict[str, dict] = {}
         self.gift_order: list[str] = []
         self.chat_rows: list[dict] = []
+        self._photo_cache: dict[str, tk.PhotoImage] = {}
+        self._rich_cache: dict[tuple, tk.PhotoImage] = {}
         self._chat_scroll_pending = False
         self._pv_text = ""
         self._online_text = "--"
@@ -230,35 +485,12 @@ class AuroraApp:
             bg=CARD, fg=MAGENTA, font=(FONT, 13),
         ).pack(side="left", padx=(16, 0))
 
-        table_head = tk.Frame(panel, bg="#151a25")
-        table_head.pack(fill="x", padx=(10, 21))
-        table_head.grid_columnconfigure(3, weight=1)
-        for column, text, width, font_size, font_weight, padx in (
-            (0, "消费等级", 6, 16, "normal", (10, 0)),
-            (1, "粉丝团", 6, 16, "normal", (4, 0)),
-            (2, "昵称", 10, 18, "bold", (4, 0)),
-        ):
-            tk.Label(
-                table_head, text=text, width=width, anchor="w", bg="#151a25",
-                fg="#8d99ae", font=(FONT, font_size, font_weight),
-            ).grid(row=0, column=column, sticky="w", padx=padx, pady=7)
-        tk.Label(
-            table_head, text="弹幕内容", anchor="w", bg="#151a25",
-            fg="#8d99ae", font=(FONT, 18, "bold"),
-        ).grid(row=0, column=3, sticky="w", padx=(6, 10), pady=7)
-
         body = tk.Frame(panel, bg=CARD)
         body.pack(fill="both", expand=True, padx=10, pady=(0, 0))
         self.chat_canvas = tk.Canvas(
             body, bg=CARD, highlightthickness=0, borderwidth=0, yscrollincrement=30
         )
-        self.chat_scroll = tk.Scrollbar(
-            body, orient="vertical", command=self.chat_canvas.yview,
-            bg="#171d29", troughcolor=CARD, activebackground="#2a3548",
-            highlightthickness=0, bd=0, relief="flat", width=11,
-        )
-        self.chat_canvas.configure(yscrollcommand=self.chat_scroll.set)
-        self.chat_scroll.pack(side="right", fill="y")
+        self.chat_scroll = None  # 无滚动条：滚轮 + 拖动
         self.chat_canvas.pack(side="left", fill="both", expand=True)
         self.chat_list = tk.Frame(self.chat_canvas, bg=CARD)
         self.chat_window = self.chat_canvas.create_window(
@@ -389,7 +621,7 @@ class AuroraApp:
             tk.Label(
                 line, textvariable=var, bg=CARD,
                 fg=GOLD if key == "gift" else FG,
-                font=(FONT, 24, "bold"),
+                font=(FONT, 26, "bold"),
             ).pack(side="left")
             tk.Label(line, text=unit, bg=CARD, fg=MUTED, font=(FONT, 10)).pack(
                 side="left", padx=(3, 0), pady=(0, 3)
@@ -409,7 +641,7 @@ class AuroraApp:
             gift_head, text="GIFT FEED", bg=CARD, fg=MAGENTA, font=(FONT, 9, "bold")
         ).pack(side="left")
         tk.Label(
-            gift_head, text="礼物 · 最近 8 条", bg=CARD, fg=FG, font=(FONT, 14, "bold")
+            gift_head, text="礼物 · 本场", bg=CARD, fg=FG, font=(FONT, 14, "bold")
         ).pack(side="left", padx=(6, 0))
         self.gift_badge = tk.Label(
             gift_head, text="0", bg="#2a1020", fg="#ffb4d6", font=(FONT, 9, "bold"),
@@ -417,18 +649,23 @@ class AuroraApp:
         )
         self.gift_badge.pack(side="right")
 
+        gift_foot = tk.Frame(gift_card, bg=CARD)
+        gift_foot.pack(side="bottom", fill="x", padx=12, pady=(0, 8))
+        self.gift_foot_var = tk.StringVar(value="仅显示整组累计 >90 钻 · 滚轮回看")
+        tk.Label(
+            gift_foot,
+            textvariable=self.gift_foot_var,
+            bg=CARD,
+            fg="#657187",
+            font=(FONT, 9),
+        ).pack(side="left")
+
         gift_body = tk.Frame(gift_card, bg=CARD)
-        gift_body.pack(fill="x", padx=8, pady=(0, 8))
+        gift_body.pack(fill="both", expand=True, padx=8, pady=(0, 8))
         self.gift_canvas = tk.Canvas(
             gift_body, bg=CARD, height=384, highlightthickness=0, borderwidth=0, yscrollincrement=30
         )
-        self.gift_scroll = tk.Scrollbar(
-            gift_body, orient="vertical", command=self.gift_canvas.yview, width=9,
-            bg="#241522", troughcolor="#0c1018", activebackground=MAGENTA,
-            relief="flat", borderwidth=0,
-        )
-        self.gift_canvas.configure(yscrollcommand=self.gift_scroll.set)
-        self.gift_scroll.pack(side="right", fill="y")
+        self.gift_scroll = None  # 无滚动条：滚轮 + 拖动
         self.gift_canvas.pack(side="left", fill="both", expand=True)
         self.gift_list = tk.Frame(self.gift_canvas, bg=CARD)
         self.gift_window = self.gift_canvas.create_window(
@@ -440,16 +677,6 @@ class AuroraApp:
         self.gift_list.bind("<MouseWheel>", self._on_gift_wheel)
         self.gift_placeholder = None
         self._show_gift_placeholder()
-
-        gift_foot = tk.Frame(gift_card, bg=CARD)
-        gift_foot.pack(side="bottom", fill="x", padx=12, pady=(0, 8))
-        tk.Label(
-            gift_foot,
-            text="仅显示整组累计 >90 钻 · 滚轮回看",
-            bg=CARD,
-            fg="#657187",
-            font=(FONT, 9),
-        ).pack(side="left")
 
     def _build_bottombar(self):
         bar = tk.Frame(self.root, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
@@ -482,9 +709,19 @@ class AuroraApp:
             )
         except Exception:
             pass
-        wrap = max(260, self.chat_canvas.winfo_width() - 365)
+        width = self.chat_canvas.winfo_width()
         for row in self.chat_rows:
             try:
+                nick_w = row["nick"].winfo_reqwidth() if row.get("nick") else 0
+                wrap = max(180, width - row.get("lead", 200) - nick_w - 24)
+                if row.get("rich"):
+                    photo = self._rich_photo(
+                        row.get("text") or "", row.get("fg") or FG, wrap
+                    )
+                    if photo is not None:
+                        row["content"].configure(image=photo)
+                        row["content"].image = photo
+                        continue
                 row["content"].configure(wraplength=wrap)
             except Exception:
                 pass
@@ -510,29 +747,144 @@ class AuroraApp:
             return "#062d36", "#bdf8ff", "entry"
         return (CARD if self.chat_count % 2 == 0 else "#0d1119"), "#dfe5f4", "normal"
 
-    def _add_chat_row(self, values, tags):
+    def _photo(self, name: str) -> tk.PhotoImage | None:
+        cached = self._photo_cache.get(name)
+        if cached is not None:
+            return cached
+        path = resource_dir() / "assets" / "ui_badges" / name
+        try:
+            im = tk.PhotoImage(file=str(path))
+        except Exception:
+            return None
+        self._photo_cache[name] = im
+        return im
+
+    def _emoji_photo(self, path: str) -> tk.PhotoImage | None:
+        key = f"emoji:{path}"
+        cached = self._photo_cache.get(key)
+        if cached is not None:
+            return cached
+        try:
+            im = tk.PhotoImage(file=str(path))
+        except Exception:
+            return None
+        factor = max(1, int(round(im.height() / 30.0)))
+        if factor > 1:
+            im = im.subsample(factor, factor)
+        self._photo_cache[key] = im
+        return im
+
+    def _rich_photo(self, text: str, color: str, max_w: int):
+        key = (text, color, int(max_w) // 8)
+        cached = self._rich_cache.get(key)
+        if cached is not None:
+            return cached
+        try:
+            im = render_rich_content(text, color, max_w)
+        except Exception:
+            im = None
+        if im is None:
+            return None
+        try:
+            from PIL import ImageTk
+
+            photo = ImageTk.PhotoImage(im)
+        except Exception:
+            return None
+        if len(self._rich_cache) > 400:
+            self._rich_cache.clear()
+        self._rich_cache[key] = photo
+        return photo
+
+    def _chat_badge_names(self, event: dict) -> list[str]:
+        names: list[str] = []
+        try:
+            pay = int(event.get("pay_level") or 0)
+            level = int(event.get("fans_club_level") or 0)
+        except (TypeError, ValueError):
+            pay = level = 0
+        if pay > 0:
+            names.append(f"honor_{min(75, pay)}.png")
+        if level > 0:
+            names.append(f"club_{min(20, level)}.png")
+        star = admin = False
+        for item in event.get("badge_items") or []:
+            if not isinstance(item, dict):
+                continue
+            who = _badge_identity(
+                str(item.get("label") or ""),
+                str(item.get("url") or ""),
+                str(item.get("uri") or ""),
+            )
+            if who == "房管":
+                admin = True
+            elif who == "星守护":
+                star = True
+        if star:
+            names.append("mark_star.png")
+        if admin:
+            names.append("mark_admin.png")
+        return names
+
+    def _add_chat_row(self, values, tags, event=None):
         bg, fg, kind = self._chat_bg(tags)
-        pay, fan, nick, content = values
+        event = event or {}
+        nick, content = values
         frame = tk.Frame(self.chat_list, bg=bg)
         frame.pack(fill="x")
         frame.grid_columnconfigure(3, weight=1)
 
-        p = tk.Label(frame, text=pay, bg=bg, fg=fg, font=(FONT, 16), width=6, anchor="w")
-        p.grid(row=0, column=0, sticky="nw", padx=(10, 0), pady=6)
-        f = tk.Label(frame, text=fan, bg=bg, fg=fg, font=(FONT, 16), width=6, anchor="w")
-        f.grid(row=0, column=1, sticky="nw", padx=(4, 0), pady=6)
-        n = tk.Label(frame, text=nick, bg=bg, fg=fg, font=(FONT, 18, "bold"), width=10, anchor="w")
-        n.grid(row=0, column=2, sticky="nw", padx=(4, 0), pady=6)
-        c = tk.Label(
-            frame, text=content, bg=bg, fg=fg, font=(FONT, 18),
-            anchor="w", justify="left",
-            wraplength=max(260, self.chat_canvas.winfo_width() - 365),
-        )
-        c.grid(row=0, column=3, sticky="nsew", padx=(6, 10), pady=6)
+        badge_box = tk.Frame(frame, bg=bg)
+        badge_box.grid(row=0, column=0, sticky="nw", padx=(10, 0), pady=(14, 2))
+        badge_w = 0
+        for idx, name in enumerate(self._chat_badge_names(event)):
+            im = self._photo(name)
+            if im is None:
+                continue
+            bl = tk.Label(badge_box, image=im, bg=bg, bd=0, highlightthickness=0)
+            bl.pack(side="left", padx=(0 if idx == 0 else 2, 0))
+            badge_w += im.width() + (0 if idx == 0 else 2)
+            bl.bind("<Double-1>", lambda _e, t=content: self._copy_chat(text=t))
+            bl.bind("<MouseWheel>", self._on_chat_wheel, add="+")
 
-        info = {"frame": frame, "content": c, "text": content}
+        n = tk.Label(frame, text=nick, bg=bg, fg=fg, font=(FONT, 18, "bold"), anchor="w")
+        n.grid(row=0, column=1, sticky="nw", padx=(6, 0), pady=8)
+        colon = tk.Label(
+            frame, text="：", bg=bg, fg="#8792a6", font=(FONT, 18, "bold"), anchor="w"
+        )
+        colon.grid(row=0, column=2, sticky="nw", padx=(0, 2), pady=8)
+        wrap = max(200, self.chat_canvas.winfo_width() - badge_w - 236)
+        rich = self._rich_photo(content, fg, wrap) if has_dy_emoji(content) else None
+        if rich is not None:
+            c = tk.Label(frame, image=rich, bg=bg, bd=0, anchor="w")
+            c.image = rich
+        else:
+            c = tk.Label(
+                frame, text=content, bg=bg, fg=fg, font=(FONT, 18),
+                anchor="w", justify="left", wraplength=wrap,
+            )
+        c.grid(row=0, column=3, sticky="nsew", padx=(0, 10), pady=8)
+        self._bind_drag(frame, self.chat_canvas)
+
+        emoji_path = str(event.get("emoji_path") or "")
+        if emoji_path:
+            em = self._emoji_photo(emoji_path)
+            if em is not None:
+                tk.Label(frame, image=em, bg=bg, bd=0).grid(
+                    row=0, column=4, sticky="nw", padx=(2, 10), pady=4
+                )
+
+        info = {
+            "frame": frame,
+            "content": c,
+            "nick": n,
+            "text": content,
+            "fg": fg,
+            "rich": rich is not None,
+            "lead": badge_w + 30,
+        }
         self.chat_rows.append(info)
-        for widget in (frame, p, f, n, c):
+        for widget in (frame, n, colon, c):
             widget.bind("<Double-1>", lambda _e, t=content: self._copy_chat(text=t))
             widget.bind("<MouseWheel>", self._on_chat_wheel, add="+")
 
@@ -1097,7 +1449,7 @@ class AuroraApp:
         tree_wrap.pack(fill="both", expand=True, padx=10, pady=(0, 0))
         self.chat_tree = ttk.Treeview(
             tree_wrap,
-            columns=("pay", "level", "nick", "content"),
+            columns=("pay", "level", "badge", "nick", "content"),
             show="headings",
             style="Aurora.Treeview",
             selectmode="browse",
@@ -1105,7 +1457,8 @@ class AuroraApp:
         for key, label, width, anchor, stretch in (
             ("pay", "消费等级", 88, "center", False),
             ("level", "粉丝团", 78, "center", False),
-            ("nick", "昵称", 210, "w", False),
+            ("badge", "标识", 84, "center", False),
+            ("nick", "昵称", 180, "w", False),
             ("content", "弹幕内容", 800, "w", True),
         ):
             self.chat_tree.heading(key, text=label, anchor=anchor)
@@ -1232,7 +1585,23 @@ class AuroraApp:
             )
         except Exception:
             pass
+        self._fit_gift_rows()
         self._sync_gift_scroll()
+
+    def _fit_gift_rows(self):
+        """Keep the eight gift rows stretched so they fill the card."""
+        try:
+            height = self.gift_canvas.winfo_height()
+        except Exception:
+            return
+        if height <= 1:
+            return
+        row_h = max(38, height // 8)
+        for info in self.gift_rows.values():
+            try:
+                info["frame"].configure(height=row_h)
+            except Exception:
+                pass
 
     def _sync_gift_scroll(self, event=None):
         try:
@@ -1244,6 +1613,35 @@ class AuroraApp:
         step = -3 if event.delta > 0 else 3
         self.gift_canvas.yview_scroll(step, "units")
         return "break"
+
+    def _drag_press(self, event, canvas):
+        self._drag_canvas = canvas
+        self._drag_y = event.y_root
+        self.root.bind_all("<B1-Motion>", self._drag_motion)
+        self.root.bind_all("<ButtonRelease-1>", self._drag_release)
+        return None
+
+    def _drag_motion(self, event):
+        canvas = getattr(self, "_drag_canvas", None)
+        if canvas is None:
+            return None
+        dy = event.y_root - getattr(self, "_drag_y", event.y_root)
+        self._drag_y = event.y_root
+        if abs(dy) >= 2:
+            step = int(round(dy / 4.0))
+            canvas.yview_scroll(-step if step else (-1 if dy > 0 else 1), "units")
+        return None
+
+    def _drag_release(self, event=None):
+        self.root.unbind_all("<B1-Motion>")
+        self.root.unbind_all("<ButtonRelease-1>")
+        self._drag_canvas = None
+        return None
+
+    def _bind_drag(self, widget, canvas):
+        widget.bind("<ButtonPress-1>", lambda e, c=canvas: self._drag_press(e, c), add="+")
+        for child in widget.winfo_children():
+            self._bind_drag(child, canvas)
 
     def _bind_gift_wheel(self, widget):
         widget.bind("<MouseWheel>", self._on_gift_wheel, add="+")
@@ -1275,7 +1673,7 @@ class AuroraApp:
         row = tk.Frame(
             self.gift_list,
             bg=bg,
-            height=40,
+            height=44,
             highlightbackground="#4a1d35",
             highlightthickness=1,
         )
@@ -1283,42 +1681,43 @@ class AuroraApp:
         row.pack_propagate(False)
         row.grid_columnconfigure(0, weight=1)
         left = tk.Frame(row, bg=bg)
-        left.grid(row=0, column=0, sticky="ew", padx=(8, 0), pady=3)
+        left.grid(row=0, column=0, sticky="nsew", padx=(10, 0), pady=2)
+        left.grid_columnconfigure(2, weight=1)
 
         nick = tk.Label(
             left,
             text="",
             bg=bg,
-            fg="#f2f5ff",
-            font=(FONT, 15, "bold"),
+            fg="#ffc2d6",
+            font=(FONT, 17, "bold"),
             anchor="w",
-            width=7,
         )
-        nick.pack(side="left")
-        pre = tk.Label(left, text="送出了", bg=bg, fg="#9aa6ba", font=(FONT, 12))
-        pre.pack(side="left", padx=(4, 0))
+        nick.grid(row=0, column=0, sticky="w")
+        pre = tk.Label(left, text="送出了", bg=bg, fg="#7d889c", font=(FONT, 9))
+        pre.grid(row=0, column=1, sticky="w", padx=(6, 6))
         gift = tk.Label(
             left,
             text="",
             bg=bg,
-            fg="#ff9cc5",
-            font=(FONT, 15, "bold"),
+            fg="#ffd76a",
+            font=(FONT, 17, "bold"),
             anchor="w",
-            width=10,
         )
-        gift.pack(side="left", padx=(3, 0))
+        gift.grid(row=0, column=2, sticky="w")
         mult = tk.Label(
             row,
             text="",
-            bg=bg,
+            bg="#2b1a0c",
             fg=GOLD,
             font=(FONT, 15, "bold"),
             anchor="e",
-            padx=0,
+            padx=8,
+            pady=2,
         )
-        mult.grid(row=0, column=1, sticky="e", padx=(3, 8), pady=3)
+        mult.grid(row=0, column=1, sticky="e", padx=(4, 6), pady=2)
 
         self._bind_gift_wheel(row)
+        self._bind_drag(row, self.gift_canvas)
         return {
             "key": key,
             "frame": row,
@@ -1333,12 +1732,34 @@ class AuroraApp:
         if len(nickname) > 10:
             nickname = nickname[:9] + "…"
         info["nick"].configure(text=nickname)
-        info["gift"].configure(text=f"【{event.get('gift_name', '')}】")
+        info["gift"].configure(text=self._fit_gift_text(event.get('gift_name', '')))
         info["mult"].configure(
             text=f"×{count}  价值{fmt_int(event.get('diamonds', 0))}钻"
         )
 
+    def _fit_gift_text(self, name: str) -> str:
+        """礼物名太长时截断成「【名字…】」，避免被右侧钻数药丸压住。"""
+        txt = f"【{name}】"
+        try:
+            from tkinter import font as tkfont
+
+            f = tkfont.Font(family=FONT, size=17, weight="bold")
+            width = self.gift_canvas.winfo_width() or 360
+            budget = max(120, int(width * 0.46))
+            if f.measure(txt) > budget:
+                base = name
+                while base and f.measure(f"【{base}…】") > budget:
+                    base = base[:-1]
+                txt = f"【{base}…】" if base else f"【…】"
+        except Exception:
+            pass
+        return txt
+
     def _add_gift_row(self, event: dict) -> dict:
+        try:
+            pinned = self.gift_canvas.yview()[1] > 0.999
+        except Exception:
+            pinned = True
         self._hide_gift_placeholder()
         info = self._gift_row(event)
         self._update_gift_row(info, event)
@@ -1350,23 +1771,32 @@ class AuroraApp:
             old_info = self.gift_rows.pop(old, None)
             if old_info:
                 old_info["frame"].destroy()
-        self.gift_badge.configure(text=str(min(self.gift_count + 1, GIFT_LIMIT)))
+        self.gift_badge.configure(text=str(len(self.gift_order)))
+        self.gift_foot_var.set(f"仅显示整组累计 >90 钻 · 共 {len(self.gift_order)} 条")
         self.gift_canvas.update_idletasks()
+        self._fit_gift_rows()
         self._sync_gift_scroll()
-        self.gift_canvas.yview_moveto(1.0)
+        if pinned:
+            self.gift_canvas.yview_moveto(1.0)
         return info
 
     def _bump_gift(self, info: dict):
         info["frame"].pack_forget()
-        info["frame"].pack(fill="x", pady=2)
+        info["frame"].pack(fill="x", pady=0)
         try:
             self.gift_order.remove(info["key"])
         except ValueError:
             pass
         self.gift_order.append(info["key"])
+        try:
+            pinned = self.gift_canvas.yview()[1] > 0.999
+        except Exception:
+            pinned = True
         self.gift_canvas.update_idletasks()
+        self._fit_gift_rows()
         self._sync_gift_scroll()
-        self.gift_canvas.yview_moveto(1.0)
+        if pinned:
+            self.gift_canvas.yview_moveto(1.0)
 
     # ------------------------------------------------------------------
     # 状态栏
@@ -1580,20 +2010,16 @@ class AuroraApp:
             else:
                 tags = ("odd" if self.chat_count % 2 else "even",)
             self._append(
-                (
-                    f"Lv.{pay}" if pay else "—",
-                    f"Lv.{level}" if level else "—",
-                    event.get("nickname", ""),
-                    event.get("content", ""),
-                ),
+                (event.get("nickname", ""), event.get("content", "")),
                 tags,
+                event,
             )
         elif kind == "entry":
             self._hide_chat_placeholder()
-            level = int(event.get("fans_club_level") or 0)
             self._append(
-                ("—", f"Lv.{level}" if level else "—", event.get("nickname", ""), "入场  进入直播间"),
+                (event.get("nickname", ""), "入场  进入直播间"),
                 ("entry",),
+                event,
             )
         elif kind == "gift":
             key = str(event.get("group_key") or event.get("msg_id") or "")
@@ -1666,8 +2092,8 @@ class AuroraApp:
         elif kind == "error":
             self.hint_var.set(event.get("text", ""))
 
-    def _append(self, values, tags):
-        self._add_chat_row(values, tags)
+    def _append(self, values, tags, event=None):
+        self._add_chat_row(values, tags, event)
 
     def _hide_chat_placeholder(self):
         if self.chat_placeholder is not None:

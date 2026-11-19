@@ -2,8 +2,11 @@ node_modules/
 __pycache__/
 dist/
 build/
+dist_badge_test/
+build_badge_test/
 release/
 *.spec
+!DouyinDanmaku.spec
 package.json
 package-lock.json
 .idea
@@ -18,3 +21,30 @@ cookie.txt
 login_profile/
 tmp_*
 ~$*
+
+# 中间产物：官方原图在 assets/badges/，运行时尺寸由 _make_runtime_assets.py 生成
+assets/badges/ui/
+docs/_*.png
+docs/app_*.png
+docs/ui_preview_*.png
+docs/__tmp_*.png
+
+# 一次性调研脚本
+_probe_*.py
+_preview_*.py
+_patch_*.py
+_club_*.py
+_mk*.py
+_check_*.py
+_merge_*.py
+_clean_*.py
+_compare_*.py
+_measure_*.py
+_inspect_*.py
+_emojicenter_*.py
+_hnlyzxf_*.py
+_push_*.py
+_shot_*.py
+_badge_*.json
+_dy_emoji_map.json
+_emojicenter_map.json
