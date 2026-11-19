@@ -3,7 +3,7 @@
 """弹幕助手 · Aurora Dark
 
 单一弹幕流：聊天 + 粉丝团 Lv.15+ 入场混排；
-底部可滚动礼物栏，默认显示最近 8 条 >90 钻礼物，格式为：
+底部可滚动礼物栏，默认显示最近 8 条 >=50 钻礼物，格式为：
     消费Lv.26 粉丝Lv.16 小番茄 送出了【跑车】x1，价值1,200钻
 界面不显示时间戳，但 CSV / 导出网站仍保留完整时间。
 """
@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+from PIL import Image
 import queue
 import re
 import sys
@@ -297,6 +298,14 @@ def _badge_text(event: dict) -> str:
 APP_NAME = "弹幕助手"
 WINDOW_TITLE = f"{APP_NAME} · Aurora Dark"
 GIFT_LIMIT = 200
+GIFT_MIN_DEFAULT = 50
+ADMIN_BG = "#1c2406"
+ADMIN_BAR = "#c6f432"
+ADMIN_NAME = "#dcff8a"
+ADMIN_BODY = "#f2ffd0"
+CHAT_LIMIT = 500
+CONTRIB_VISIBLE = 5
+CONTRIB_KEEP = 50  # 榜单最多保留的贡献人数
 _SINGLE_MUTEX = None
 
 
@@ -354,6 +363,13 @@ class AuroraApp:
         self.total_events = 0
         self.gift_rows: dict[str, dict] = {}
         self.gift_order: list[str] = []
+        self.gift_min = GIFT_MIN_DEFAULT
+        self._gift_seen: list[dict] = []
+        self._contrib: dict[str, dict] = {}
+        self._contrib_offset = 0
+        self._online_text = "--"
+        self._gain_text = "--"
+        self._payers_text = "--"
         self._gift_total_diamonds = 0
         self.chat_rows: list[dict] = []
         self._photo_cache: dict[str, tk.PhotoImage] = {}
@@ -455,9 +471,14 @@ class AuroraApp:
         head.pack(fill="x", padx=18, pady=(15, 8))
         tk.Frame(head, bg=ACCENT, width=3, height=21).pack(side="left", padx=(0, 9))
         tk.Label(head, text="弹幕", bg=CARD, fg=FG, font=(FONT, 20, "bold")).pack(side="left")
-        tk.Label(
-            head, text="聊天 / 入场 / 礼物", bg=CARD, fg=MUTED, font=(FONT, 12)
-        ).pack(side="left", padx=(9, 0), pady=(5, 0))
+        self.header_stats_var = tk.StringVar(
+            value="在线人数 --        本场涨粉 --        付费人数 --"
+        )
+        self.header_stats = tk.Label(
+            head, textvariable=self.header_stats_var, bg=CARD, fg=FG,
+            font=(FONT, 20, "bold"),
+        )
+        self.header_stats.place(relx=0.5, rely=0.5, anchor="center")
         self.chat_badge = tk.Label(
             head, text="0", bg="#1a2030", fg="#aeb9cc", font=(FONT, 12, "bold"),
             padx=9, pady=2,
@@ -483,8 +504,8 @@ class AuroraApp:
         ).pack(side="left", padx=(16, 0))
         tk.Label(
             legend,
-            text="礼物 90+",
-            bg=CARD, fg=MAGENTA, font=(FONT, 13),
+            text="房管",
+            bg=CARD, fg=ADMIN_BAR, font=(FONT, 13, "bold"),
         ).pack(side="left", padx=(16, 0))
 
         body = tk.Frame(panel, bg=CARD)
@@ -600,39 +621,48 @@ class AuroraApp:
         )
         self.clear_login_btn.pack(side="left", padx=(5, 0))
 
-        # 2x2 指标
-        metrics = tk.Frame(parent, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
-        metrics.pack(fill="x", pady=(0, 8))
-        specs = [
-            ("online", "当前在线", "人", ACCENT),
-            ("gain", "本场涨粉", "人", BLUE),
-            ("payers", "付费人数", "人", RED),
-            ("gift", "礼物总额", "钻", GOLD),
-        ]
-        self.summary_vars: dict[str, tk.StringVar] = {}
-        for idx, (key, label, unit, color) in enumerate(specs):
-            r, c = divmod(idx, 2)
-            metrics.grid_columnconfigure(c, weight=1)
-            cell = tk.Frame(metrics, bg=CARD)
-            cell.grid(row=r, column=c, sticky="nsew", padx=(12 if c == 0 else 7, 12 if c == 1 else 7), pady=9)
-            tk.Label(cell, text=label, bg=CARD, fg=MUTED, font=(FONT, 11)).pack(anchor="w")
-            line = tk.Frame(cell, bg=CARD)
-            line.pack(anchor="w")
-            var = tk.StringVar(value="--")
-            self.summary_vars[key] = var
-            tk.Label(
-                line, textvariable=var, bg=CARD,
-                fg=GOLD if key == "gift" else FG,
-                font=(FONT, 26, "bold"),
-            ).pack(side="left")
-            tk.Label(line, text=unit, bg=CARD, fg=MUTED, font=(FONT, 10)).pack(
-                side="left", padx=(3, 0), pady=(0, 3)
-            )
-            if key == "payers":
-                self.payer_detail = tk.StringVar(value="")
-                tk.Label(
-                    cell, textvariable=self.payer_detail, bg=CARD, fg=MUTED, font=(FONT, 9)
-                ).pack(anchor="w")
+        # 汇总变量（数值进弹幕区顶部那一行，卡片不再显示）
+        self.summary_vars: dict[str, tk.StringVar] = {
+            key: tk.StringVar(value="--") for key in ("online", "gain", "payers", "gift")
+        }
+        self.payer_detail = tk.StringVar(value="")
+
+        # 礼物贡献榜（本场）
+        top_card = tk.Frame(parent, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
+        top_card.pack(fill="x", pady=(0, 8))
+        top_head = tk.Frame(top_card, bg=CARD)
+        top_head.pack(fill="x", padx=12, pady=(10, 4))
+        tk.Label(
+            top_head, text="GIFT TOP", bg=CARD, fg=MAGENTA, font=(FONT, 9, "bold")
+        ).pack(side="left")
+        tk.Label(
+            top_head, text="礼物贡献 · 本场", bg=CARD, fg=FG, font=(FONT, 14, "bold")
+        ).pack(side="left", padx=(6, 0))
+        self.contrib_badge = tk.Label(
+            top_head, text="0", bg="#2a1020", fg="#ffb4d6", font=(FONT, 9, "bold"),
+            padx=7, pady=1,
+        )
+        self.contrib_badge.pack(side="right")
+
+        self.contrib_body = tk.Frame(top_card, bg=CARD)
+        self.contrib_body.pack(fill="x", padx=10)
+        self.contrib_cells = []
+        for _ in range(CONTRIB_VISIBLE):
+            row = tk.Frame(self.contrib_body, bg=CARD)
+            row.pack(fill="x", pady=1)
+            rank = tk.Label(row, text="", bg=CARD, fg=MUTED, font=(FONT, 12, "bold"), width=2, anchor="w")
+            rank.pack(side="left")
+            name = tk.Label(row, text="", bg=CARD, fg=FG, font=(FONT, 12, "bold"), anchor="w")
+            name.pack(side="left", padx=(2, 0))
+            value = tk.Label(row, text="", bg=CARD, fg=GOLD, font=(FONT, 12, "bold"), anchor="e")
+            value.pack(side="right")
+            self.contrib_cells.append((row, rank, name, value))
+
+        tk.Label(
+            top_card, text="滚轮翻看 · 保留前 50", bg=CARD, fg="#657187", font=(FONT, 9)
+        ).pack(anchor="w", padx=12, pady=(2, 8))
+        for widget in (top_card, top_head, self.contrib_body):
+            widget.bind("<MouseWheel>", self._on_contrib_wheel)
 
         # 礼物
         gift_card = tk.Frame(parent, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
@@ -651,16 +681,32 @@ class AuroraApp:
         )
         self.gift_badge.pack(side="right")
 
-        gift_foot = tk.Frame(gift_card, bg=CARD)
-        gift_foot.pack(side="bottom", fill="x", padx=12, pady=(0, 8))
-        self.gift_foot_var = tk.StringVar(value="仅显示整组累计 >90 钻 · 滚轮回看")
-        tk.Label(
-            gift_foot,
-            textvariable=self.gift_foot_var,
-            bg=CARD,
-            fg="#657187",
-            font=(FONT, 9),
-        ).pack(side="left")
+        th_box = tk.Frame(gift_head, bg=CARD)
+        th_box.pack(side="right", padx=(0, 8))
+        tk.Label(th_box, text="≥", bg=CARD, fg=MUTED, font=(FONT, 9)).pack(side="left")
+        self.gift_min_var = tk.StringVar(value=str(GIFT_MIN_DEFAULT))
+        self.gift_min_entry = tk.Entry(
+            th_box,
+            textvariable=self.gift_min_var,
+            width=4,
+            justify="center",
+            bg=FIELD,
+            fg=FG,
+            insertbackground=FG,
+            relief="flat",
+            font=(FONT, 9, "bold"),
+            highlightthickness=1,
+            highlightbackground=BORDER,
+            highlightcolor=ACCENT,
+        )
+        self.gift_min_entry.pack(side="left", padx=2, ipady=1)
+        tk.Label(th_box, text="钻", bg=CARD, fg=MUTED, font=(FONT, 9)).pack(side="left")
+        self.gift_min_entry.bind("<Return>", lambda _e: self._apply_gift_min())
+        self.gift_min_entry.bind("<FocusOut>", lambda _e: self._apply_gift_min())
+        self.gift_min_entry.bind("<KP_Enter>", lambda _e: self._apply_gift_min())
+
+        # 底部说明行已移除（礼物行铺满卡片），变量保留给内部刷新逻辑
+        self.gift_foot_var = tk.StringVar(value="")
 
         gift_body = tk.Frame(gift_card, bg=CARD)
         gift_body.pack(fill="both", expand=True, padx=8, pady=(0, 8))
@@ -741,6 +787,8 @@ class AuroraApp:
 
     def _chat_bg(self, tags) -> tuple[str, str, str]:
         tags = tuple(tags or ())
+        if "admin" in tags:
+            return ADMIN_BG, ADMIN_NAME, "admin"
         if "super" in tags:
             return "#2e1218", "#ffd7e5", "super"
         if "hot" in tags:
@@ -762,17 +810,28 @@ class AuroraApp:
         return im
 
     def _emoji_photo(self, path: str) -> tk.PhotoImage | None:
+        """会员表情：等比缩到高度正好 44px（Tk 只能整数 subsample，这里用 PIL 预缩）。"""
         key = f"emoji:{path}"
         cached = self._photo_cache.get(key)
         if cached is not None:
             return cached
+        target_h = 44
         try:
-            im = tk.PhotoImage(file=str(path))
+            src = Image.open(path).convert("RGBA")
+            if src.height != target_h:
+                target_w = max(1, round(src.width * target_h / src.height))
+                out_dir = os.path.join(os.path.dirname(str(path)), "_44")
+                os.makedirs(out_dir, exist_ok=True)
+                small = os.path.join(
+                    out_dir, f"{os.path.splitext(os.path.basename(str(path)))[0]}_{target_h}.png"
+                )
+                if not os.path.exists(small):
+                    src.resize((target_w, target_h), Image.LANCZOS).save(small)
+                im = tk.PhotoImage(file=small)
+            else:
+                im = tk.PhotoImage(file=str(path))
         except Exception:
             return None
-        factor = max(1, int(round(im.height() / 30.0)))
-        if factor > 1:
-            im = im.subsample(factor, factor)
         self._photo_cache[key] = im
         return im
 
@@ -830,10 +889,13 @@ class AuroraApp:
 
     def _add_chat_row(self, values, tags, event=None):
         bg, fg, kind = self._chat_bg(tags)
+        body_fg = ADMIN_BODY if kind == "admin" else fg
         event = event or {}
         nick, content = values
         frame = tk.Frame(self.chat_list, bg=bg)
         frame.pack(fill="x")
+        if kind == "admin":
+            tk.Frame(frame, bg=ADMIN_BAR, width=4).place(x=0, y=0, relheight=1)
         frame.grid_columnconfigure(3, weight=1)
 
         badge_box = tk.Frame(frame, bg=bg)
@@ -856,13 +918,13 @@ class AuroraApp:
         )
         colon.grid(row=0, column=2, sticky="nw", padx=(0, 2), pady=8)
         wrap = max(200, self.chat_canvas.winfo_width() - badge_w - 236)
-        rich = self._rich_photo(content, fg, wrap) if has_dy_emoji(content) else None
+        rich = self._rich_photo(content, body_fg, wrap) if has_dy_emoji(content) else None
         if rich is not None:
             c = tk.Label(frame, image=rich, bg=bg, bd=0, anchor="w")
             c.image = rich
         else:
             c = tk.Label(
-                frame, text=content, bg=bg, fg=fg, font=(FONT, 18),
+                frame, text=content, bg=bg, fg=body_fg, font=(FONT, 18),
                 anchor="w", justify="left", wraplength=wrap,
             )
         c.grid(row=0, column=3, sticky="nsew", padx=(0, 10), pady=8)
@@ -872,9 +934,9 @@ class AuroraApp:
         if emoji_path:
             em = self._emoji_photo(emoji_path)
             if em is not None:
-                tk.Label(frame, image=em, bg=bg, bd=0).grid(
-                    row=0, column=4, sticky="nw", padx=(2, 10), pady=4
-                )
+                # 会员表情永远单独出现：去掉占位文字，直接把图放在冒号后
+                c.configure(text="", image=em, wraplength=0, pady=6)
+                c.image = em
 
         info = {
             "frame": frame,
@@ -890,7 +952,7 @@ class AuroraApp:
             widget.bind("<Double-1>", lambda _e, t=content: self._copy_chat(text=t))
             widget.bind("<MouseWheel>", self._on_chat_wheel, add="+")
 
-        while len(self.chat_rows) > 250:
+        while len(self.chat_rows) > CHAT_LIMIT:
             old = self.chat_rows.pop(0)
             old["frame"].destroy()
 
@@ -1441,7 +1503,7 @@ class AuroraApp:
         note.pack(fill="x", padx=14, pady=(0, 6))
         tk.Label(
             note,
-            text="入场 ≥15 青色高亮 · 礼物 >90 钻 洋红最高级高亮 · 弹幕 35+/15+ 金色、40+/18+ 红色",
+            text="入场 ≥15 青色高亮 · 礼物 ≥50 钻 洋红最高级高亮 · 弹幕 35+/15+ 金色、40+/18+ 红色",
             bg=CARD,
             fg="#778399",
             font=(FONT, 8),
@@ -1533,7 +1595,7 @@ class AuroraApp:
         ).pack(side="left", padx=(8, 0))
         tk.Label(
             gift_head,
-            text="仅显示整组累计 >90 钻 · 滚轮回看",
+            text="仅显示整组累计 ≥50 钻 · 滚轮回看",
             bg=CARD,
             fg=MUTED,
             font=(FONT, 8),
@@ -1763,10 +1825,145 @@ class AuroraApp:
         total = getattr(self, "_gift_total_diamonds", 0)
         if total:
             self.gift_foot_var.set(
-                f"仅显示整组累计 >90 钻 · 共 {count} 条 · 合计 {fmt_int(total)} 钻"
+                f"仅显示整组累计 ≥{fmt_int(self.gift_min)} 钻 · 共 {count} 条 · 合计 {fmt_int(total)} 钻"
             )
         else:
-            self.gift_foot_var.set(f"仅显示整组累计 >90 钻 · 共 {count} 条")
+            self.gift_foot_var.set(
+                f"仅显示整组累计 ≥{fmt_int(self.gift_min)} 钻 · 共 {count} 条"
+            )
+
+    def _refresh_header_stats(self, event: dict | None = None) -> None:
+        if event is not None:
+            if event.get("online") is not None:
+                self._online_text = fmt_int(event["online"])
+            gain = event.get("follower_gain")
+            if gain is not None:
+                self._gain_text = f"+{fmt_int(gain)}"
+            payers = event.get("payers")
+            if payers is not None:
+                self._payers_text = fmt_int(payers)
+        self.header_stats_var.set(
+            f"在线人数 {getattr(self, '_online_text', '--')}        "
+            f"本场涨粉 {getattr(self, '_gain_text', '--')}        "
+            f"付费人数 {getattr(self, '_payers_text', '--')}"
+        )
+
+    def _on_contrib_wheel(self, event):
+        step = -1 if event.delta > 0 else 1
+        self._contrib_offset = max(
+            0, min(self._contrib_offset + step, max(0, len(self._contrib) - 1))
+        )
+        self._refresh_contrib()
+        return "break"
+
+    def _refresh_contrib(self) -> None:
+        items = sorted(
+            self._contrib.values(), key=lambda r: -int(r.get("diamonds") or 0)
+        )[:CONTRIB_KEEP]
+        self.contrib_badge.configure(text=fmt_int(len(items)))
+        start = min(self._contrib_offset, max(0, len(items) - 1))
+        window = items[start : start + CONTRIB_VISIBLE]
+        for idx, (row, rank, name, value) in enumerate(self.contrib_cells):
+            if idx < len(window):
+                item = window[idx]
+                rank.configure(text=str(start + idx + 1))
+                nick = str(item.get("nick") or "")
+                name.configure(text=nick if len(nick) <= 12 else nick[:11] + "…")
+                value.configure(text=f"{fmt_int(int(item.get('diamonds') or 0))} 钻")
+                row.pack(fill="x", pady=1)
+            else:
+                row.pack_forget()
+
+    def _add_contrib(self, event: dict) -> None:
+        uid = str(event.get("user_id") or "")
+        if not uid:
+            return
+        try:
+            added = int(event.get("added") or 0)
+        except (TypeError, ValueError):
+            added = 0
+        if added <= 0:
+            return
+        item = self._contrib.setdefault(uid, {"nick": "", "diamonds": 0})
+        item["nick"] = str(event.get("nickname") or item["nick"] or "?")
+        item["diamonds"] = int(item.get("diamonds") or 0) + added
+        self._refresh_contrib()
+
+    def _apply_gift_totals(self, event: dict) -> None:
+        """礼物事件带上本场累计值，避免「总钻数小于单条礼物」。"""
+        total = event.get("session_diamonds")
+        if total is not None:
+            shown = max(int(total), self._gift_total_diamonds)
+            self._gift_total_diamonds = shown
+            self.summary_vars["gift"].set(fmt_int(shown))
+            self._refresh_gift_foot()
+        row_total = event.get("diamonds")
+        if row_total:
+            try:
+                row_total = int(row_total)
+            except (TypeError, ValueError):
+                row_total = 0
+            if row_total > self._gift_total_diamonds:
+                self._gift_total_diamonds = row_total
+                self.summary_vars["gift"].set(fmt_int(row_total))
+                self._refresh_gift_foot()
+
+    def _gift_visible(self, event: dict) -> bool:
+        try:
+            diamonds = int(event.get("diamonds") or 0)
+        except (TypeError, ValueError):
+            diamonds = 0
+        return diamonds >= self.gift_min
+
+    def _remember_gift(self, event: dict, key: str) -> None:
+        """保留每一条礼物，改门槛时可以重新筛选。"""
+        if not key:
+            return
+        for idx, seen in enumerate(self._gift_seen):
+            if seen.get("_key") == key:
+                merged = dict(event)
+                merged["_key"] = key
+                self._gift_seen[idx] = merged
+                return
+        item = dict(event)
+        item["_key"] = key
+        self._gift_seen.append(item)
+        if len(self._gift_seen) > 500:
+            del self._gift_seen[: len(self._gift_seen) - 500]
+
+    def _apply_gift_min(self) -> None:
+        raw = (self.gift_min_var.get() or "").strip()
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        value = int(digits) if digits else GIFT_MIN_DEFAULT
+        value = max(0, min(value, 1_000_000))
+        self.gift_min_var.set(str(value))
+        if value == self.gift_min:
+            return
+        self.gift_min = value
+        self._rebuild_gift_list()
+
+    def _rebuild_gift_list(self) -> None:
+        for info in self.gift_rows.values():
+            info["frame"].destroy()
+        self.gift_rows.clear()
+        self.gift_order.clear()
+        self.gift_count = 0
+        self.gift_canvas.yview_moveto(0.0)
+        self._hide_gift_placeholder()
+        for event in self._gift_seen:
+            if self._gift_visible(event):
+                self._add_gift_row(event)
+                self.gift_count += 1
+        if not self.gift_order:
+            self._show_gift_placeholder()
+        self.gift_badge.configure(text=str(len(self.gift_order)))
+        self._refresh_gift_foot()
+        self._fit_gift_rows()
+        self._sync_gift_scroll()
+        try:
+            self.gift_canvas.yview_moveto(1.0)
+        except Exception:
+            pass
 
     def _add_gift_row(self, event: dict) -> dict:
         try:
@@ -2044,7 +2241,10 @@ class AuroraApp:
             self._hide_chat_placeholder()
             level = int(event.get("fans_club_level") or 0)
             pay = int(event.get("pay_level") or 0)
-            if pay > 40 or level >= 18:
+            is_admin = any("mark_admin" in n for n in self._chat_badge_names(event))
+            if is_admin:
+                tags = ("admin",)
+            elif pay > 40 or level >= 18:
                 tags = ("super",)
             elif pay > 35 or level >= 15:
                 tags = ("hot",)
@@ -2063,15 +2263,19 @@ class AuroraApp:
                 event,
             )
         elif kind == "gift":
+            self._add_contrib(event)
             key = str(event.get("group_key") or event.get("msg_id") or "")
+            self._remember_gift(event, key)
             info = self.gift_rows.get(key) if key else None
             if info:
                 self._update_gift_row(info, event)
                 self._bump_gift(info)
-            else:
+            elif self._gift_visible(event):
                 self._add_gift_row(event)
                 self.gift_count += 1
+            self._apply_gift_totals(event)
         elif kind == "summary":
+            self._refresh_header_stats(event)
             online = event.get("online")
             if online:
                 self.summary_vars["online"].set(fmt_int(online))
@@ -2087,8 +2291,10 @@ class AuroraApp:
                 self.payer_detail.set(f"粉丝团 {fan_payers} 人" if fan_payers else "")
             diamonds = event.get("gift_diamonds")
             if diamonds is not None:
-                self.summary_vars["gift"].set(fmt_int(diamonds))
-                self._gift_total_diamonds = int(diamonds)
+                shown = max(int(diamonds), self._gift_total_diamonds)
+                self.summary_vars["gift"].set(fmt_int(shown))
+                if shown != self._gift_total_diamonds:
+                    self._gift_total_diamonds = shown
                 self._refresh_gift_foot()
             pv = event.get("pv")
             if pv:
@@ -2162,6 +2368,9 @@ class AuroraApp:
             info["frame"].destroy()
         self.gift_rows.clear()
         self.gift_order.clear()
+        self._gift_seen.clear()
+        self._contrib.clear()
+        self._contrib_offset = 0
         self.gift_canvas.yview_moveto(0.0)
         self._sync_gift_scroll()
         self._hide_gift_placeholder()
@@ -2185,8 +2394,12 @@ class AuroraApp:
             var.set("--")
         self.payer_detail.set("")
         self._online_text = "--"
+        self._gain_text = "--"
+        self._payers_text = "--"
         self._pv_text = ""
         self.online_top_var.set("在线 --")
+        self._refresh_header_stats()
+        self._refresh_contrib()
 
     def _refresh_online_top(self):
         text = f"在线 {self._online_text}"

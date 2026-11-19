@@ -56,3 +56,9 @@ _shot_*.py
 _badge_*.json
 _dy_emoji_map.json
 _emojicenter_map.json
+
+# scratch scripts from live debugging
+_*.py
+_*.bin
+_*.txt
+

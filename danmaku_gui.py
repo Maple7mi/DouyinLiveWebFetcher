@@ -5,7 +5,7 @@
 四个分区：
 1. 弹幕：全部聊天，含消费等级、粉丝团灯牌等级、昵称、内容；
 2. 入场：只看粉丝团灯牌 > 15 级的进场；
-3. 礼物：只显示单条总价值 > 90 钻（9 元）的礼物；
+3. 礼物：只显示单条总价值 >= 50 钻（5 元）的礼物；
 4. 直播总结：当前在线、本场涨粉、付费人数、礼物总额、累计观看。
 
 用法：
@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import base64
 import csv
 import gzip
 import hashlib
@@ -74,6 +75,8 @@ MEMBERSHIP_PRICES = {
     "会员": 980,
 }
 FANCLUB_JOIN_PRICE = 1
+# 礼物面板展示门槛：整组累计 >= 50 钻（5 元）才显示
+GIFT_SHOW_MIN = 50
 
 # badge 诊断：额外写一份“payload 里到底有哪些徽章字段”，用于定位 0 字节问题。
 # 只在测试包里长期开着；设 DANMAKU_BADGE_PROBE=0 可关掉。
@@ -81,6 +84,33 @@ BADGE_PROBE_ENABLED = os.environ.get("DANMAKU_BADGE_PROBE", "0") == "1"
 # 原始消息转储（all_msgs / unknown_msgs）只在排查时开，稳定版默认关闭。
 MSG_DUMP_ENABLED = os.environ.get("DANMAKU_MSG_DUMP", "0") == "1"
 BADGE_PROBE_LIMIT = 20000
+
+
+def _text_value(content) -> str:
+    """把 protobuf Text 拼回人看的句子（string_value 逐段拼接，占位补上昵称/数字）。"""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content.strip()
+    pieces = getattr(content, "pieces_list", None)
+    if not pieces:
+        return str(content).strip()
+    out: list[str] = []
+    for piece in pieces:
+        value = str(getattr(piece, "string_value", "") or "")
+        if value:
+            out.append(value)
+            continue
+        user_value = getattr(piece, "user_value", None)
+        if user_value is not None:
+            out.append(str(getattr(user_value, "nick_name", "") or ""))
+            continue
+        gift_value = getattr(piece, "gift_value", None)
+        if gift_value is not None:
+            out.append(str(getattr(gift_value, "gift_name", "") or ""))
+            continue
+    text = "".join(out).strip()
+    return text or str(content).strip()
 
 
 def _image_url(img) -> str:
@@ -164,24 +194,122 @@ EMOJI_UA = (
 )
 
 
-def _emoji_image_url(message) -> str:
-    """Best-effort URL for a Douyin emoji sticker inside EmojiChatMessage."""
+WEB_IMAGE_BASE = "https://p3-webcast.douyinpic.com/img/webcast/"
+
+
+def _image_candidates(image) -> list[str]:
+    """Image 消息里可能的图片地址：url_list 优先，其次用 uri 拼默认图床。"""
+    out: list[str] = []
+    try:
+        for url in getattr(image, "url_list_list", None) or []:
+            if url:
+                out.append(str(url))
+        uri = str(getattr(image, "uri", "") or "")
+        if uri:
+            if uri.startswith("http"):
+                out.append(uri)
+            else:
+                uri = uri.lstrip("/")
+                if uri.startswith("webcast/"):
+                    uri = uri[len("webcast/"):]
+                out.append(f"{WEB_IMAGE_BASE}{uri}~tplv-obj.image")
+    except Exception:
+        pass
+    return out
+
+
+def _emoji_url_candidates(message) -> list[str]:
+    """会员表情可能的图片地址，按概率排序。"""
+    out: list[str] = []
     try:
         content = getattr(message, "emoji_content", None)
         pieces = getattr(content, "pieces_list", None) if content is not None else None
         for piece in pieces or []:
             value = getattr(piece, "image_value", None)
             image = getattr(value, "image", None) if value is not None else None
-            urls = getattr(image, "url_list_list", None) if image is not None else None
-            if urls:
-                return str(urls[0])
+            if image is not None:
+                out.extend(_image_candidates(image))
         bg = getattr(message, "background_image", None)
-        urls = getattr(bg, "url_list_list", None) if bg is not None else None
-        if urls:
-            return str(urls[0])
+        if bg is not None:
+            out.extend(_image_candidates(bg))
     except Exception:
         pass
+    # 去重保序
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for url in out:
+        if url and url not in seen:
+            seen.add(url)
+            uniq.append(url)
+    return uniq
+
+
+_STICKER_URL_RE = re.compile(
+    rb"https://lf\d+-webcastcdn-tos\.douyinstatic\.com/obj/webcast/[A-Za-z0-9_.\-]+\.(?:png|gif|webp|jpe?g)"
+)
+_RAW_URL_RE = re.compile(rb"https?://[\x21-\x7e]+?\.(?:png|gif|webp|jpe?g)")
+# 这些是徽章 / 头像 / 功能图，不是表情贴纸
+_RAW_URL_BLOCK = (
+    "aweme-avatar",
+    "/aweme/",
+    "new_user_grade_level",
+    "fansclub_level",
+    "star_guard",
+    "aweme_pay_grade",
+    "subscribe_new",
+    "league_identity",
+    "user_grade",
+)
+
+
+def _raw_emoji_url(payload: bytes) -> str:
+    """从 EmojiChatMessage 原始字节里扫表情贴纸地址（未建模字段也能扫到）。"""
+    try:
+        sticker = _STICKER_URL_RE.search(payload)
+        if sticker:
+            return sticker.group(0).decode("ascii", "ignore")
+        hits = [m.group(0).decode("ascii", "ignore") for m in _RAW_URL_RE.finditer(payload)]
+    except Exception:
+        return ""
+    for url in hits:
+        low = url.lower()
+        if any(b in low for b in _RAW_URL_BLOCK):
+            continue
+        if "webcast" in low or "douyinstatic" in low:
+            return url.split("?", 1)[0]
     return ""
+
+
+def _raw_sticker_urls(payload: bytes) -> list:
+    """所有 obj/webcast 贴纸地址（同一张图通常有 lf3/lf5/lf6 多个镜像）。"""
+    try:
+        out = []
+        for m in _STICKER_URL_RE.finditer(payload):
+            url = m.group(0).decode("ascii", "ignore")
+            if url not in out:
+                out.append(url)
+        return out
+    except Exception:
+        return []
+
+
+def _raw_urls(payload: bytes) -> list:
+    """所有看起来像图片的 URL，只用于日志排查。"""
+    try:
+        out = []
+        for m in _RAW_URL_RE.finditer(payload):
+            url = m.group(0).decode("ascii", "ignore").split("?", 1)[0]
+            if url not in out:
+                out.append(url)
+        return out
+    except Exception:
+        return []
+
+
+def _emoji_image_url(message) -> str:
+    """Best-effort URL for a Douyin emoji sticker inside EmojiChatMessage."""
+    candidates = _emoji_url_candidates(message)
+    return candidates[0] if candidates else ""
 
 
 class DanmakuClient(DouyinLiveWebFetcher):
@@ -376,6 +504,13 @@ class DanmakuClient(DouyinLiveWebFetcher):
         self._badge_raw = (logs / f"badge_samples_{self.live_id}_{stamp}.jsonl").open(
             "w", encoding="utf-8"
         )
+        # 会员表情（WebcastEmojiChatMessage）单独留证：URL 候选、缓存文件名、尺寸
+        self._emoji_raw = (logs / f"emoji_msgs_{self.live_id}_{stamp}.jsonl").open(
+            "w", encoding="utf-8"
+        )
+        self._emoji_frames = (
+            logs / f"emoji_frames_{self.live_id}_{stamp}.jsonl"
+        ).open("w", encoding="utf-8")
         self._probe_count = 0
         self._badge_probe_file = None
         if BADGE_PROBE_ENABLED:
@@ -408,6 +543,8 @@ class DanmakuClient(DouyinLiveWebFetcher):
             self._csv_file,
             self._gift_raw,
             self._badge_raw,
+            getattr(self, "_emoji_raw", None),
+            getattr(self, "_emoji_frames", None),
             getattr(self, "_badge_probe_file", None),
         ):
             try:
@@ -425,6 +562,59 @@ class DanmakuClient(DouyinLiveWebFetcher):
             path.parent.mkdir(exist_ok=True)
             with path.open("a", encoding="utf-8") as fh:
                 fh.write(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {text}\n")
+        except Exception:
+            pass
+
+    def _log_emoji_message(self, message, data: dict, payload: bytes = b""):
+        """会员表情单独留证：URL 候选、缓存文件名、图片尺寸，方便离线核对。"""
+        raw = getattr(self, "_emoji_raw", None)
+        if raw is None:
+            return
+        try:
+            content = getattr(message, "emoji_content", None)
+            pieces_info: list[dict] = []
+            pieces = getattr(content, "pieces_list", None) if content is not None else None
+            for piece in pieces or []:
+                info = {
+                    "string_value": str(getattr(piece, "string_value", "") or ""),
+                }
+                value = getattr(piece, "image_value", None)
+                image = getattr(value, "image", None) if value is not None else None
+                if image is not None:
+                    info.update(
+                        {
+                            "urls": list(getattr(image, "url_list_list", None) or []),
+                            "uri": str(getattr(image, "uri", "") or ""),
+                            "width": int(getattr(image, "width", 0) or 0),
+                            "height": int(getattr(image, "height", 0) or 0),
+                        }
+                    )
+                pieces_info.append(info)
+            bg = getattr(message, "background_image", None)
+            bg_info = None
+            if bg is not None:
+                bg_info = {
+                    "urls": list(getattr(bg, "url_list_list", None) or []),
+                    "uri": str(getattr(bg, "uri", "") or ""),
+                    "width": int(getattr(bg, "width", 0) or 0),
+                    "height": int(getattr(bg, "height", 0) or 0),
+                }
+            record = {
+                "ts": datetime.now().isoformat(timespec="seconds"),
+                "msg_id": str(data.get("msg_id") or ""),
+                "user_id": str(data.get("user_id") or ""),
+                "nickname": data.get("nickname") or "",
+                "emoji_id": int(data.get("emoji_id") or 0),
+                "content": data.get("content") or "",
+                "emoji_url": data.get("emoji_url") or "",
+                "emoji_path": data.get("emoji_path") or "",
+                "url_candidates": _emoji_url_candidates(message),
+        "raw_urls": _raw_urls(payload),
+                "pieces": pieces_info,
+                "background_image": bg_info,
+            }
+            raw.write(json.dumps(record, ensure_ascii=False) + "\n")
+            raw.flush()
         except Exception:
             pass
 
@@ -696,6 +886,8 @@ class DanmakuClient(DouyinLiveWebFetcher):
         }
         for msg in response.messages_list:
             self._count_method(msg.method)
+            if msg.method == "WebcastEmojiChatMessage":
+                self._dump_emoji_frame(msg.payload)
             self._dump_all(msg.method, msg.payload)
             handler = handlers.get(msg.method)
             if not handler:
@@ -710,6 +902,22 @@ class DanmakuClient(DouyinLiveWebFetcher):
                 handler(msg.payload)
             except Exception as exc:
                 self._emit("error", text=f"{msg.method} 解析失败：{exc}")
+
+    def _dump_emoji_frame(self, payload: bytes) -> None:
+        """会员表情的原始 protobuf 整帧落盘（base64），便于事后离线解码找图片地址。"""
+        handle = getattr(self, "_emoji_frames", None)
+        if handle is None:
+            return
+        try:
+            rec = {
+                "ts": datetime.now().isoformat(timespec="seconds"),
+                "size": len(payload),
+                "payload_b64": base64.b64encode(payload).decode("ascii"),
+            }
+            handle.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            handle.flush()
+        except Exception:
+            pass
 
     def _dump_all(self, method: str, payload: bytes) -> None:
         """把所有原始消息的类型+可见文本落盘（限 20MB），用于排查漏弹幕。"""
@@ -841,8 +1049,20 @@ class DanmakuClient(DouyinLiveWebFetcher):
         level = int(club.level or 0) if club else 0
         pay_level = int(user.pay_grade.level or 0) if user.pay_grade else 0
         content = (message.default_content or "[表情]").replace("\n", " ").strip()
-        emoji_url = _emoji_image_url(message)
-        emoji_path = self._cache_emoji(emoji_url)
+        candidates = [u for u in _emoji_url_candidates(message) if u]
+        # betterproto 会把未建模的字段丢掉，URL 只能从原始字节里捞
+        for url in _raw_sticker_urls(payload):
+            if url not in candidates:
+                candidates.append(url)
+        fallback = _raw_emoji_url(payload)
+        if fallback and fallback not in candidates:
+            candidates.append(fallback)
+        emoji_url, emoji_path = "", ""
+        for url in candidates:
+            path = self._cache_emoji(url)
+            if path:
+                emoji_url, emoji_path = url, path
+                break
         badges = _badge_items(user)
         data = dict(
             msg_id=msg_id,
@@ -859,6 +1079,7 @@ class DanmakuClient(DouyinLiveWebFetcher):
             emoji_path=emoji_path,
         )
         self._log_badge_sample("emoji", user, data)
+        self._log_emoji_message(message, data, payload)
         self._msg_count += 1
         self._emit("chat", **data)
         self._write_csv("chat", **data)
@@ -991,9 +1212,32 @@ class DanmakuClient(DouyinLiveWebFetcher):
                 self._fan_payers.add(uid)
         self._gift_diamonds += diamonds
         self._msg_count += 1
+        if self._gift_raw:
+            try:
+                self._gift_raw.write(
+                    json.dumps(
+                        {
+                            "ts": datetime.now().isoformat(timespec="seconds"),
+                            "calc": {
+                                "msg_id": msg_id,
+                                "group": group,
+                                "delta": count,
+                                "group_total": group_total,
+                                "unit": unit,
+                                "added": diamonds,
+                                "session": self._gift_diamonds,
+                            },
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+                self._gift_raw.flush()
+            except Exception:
+                pass
 
-        # 所有礼物都写入 CSV（含未达到 >90 钻展示门槛的），
-        # 供网页版按天汇总礼物榜；界面仍然只展示 >90 钻的整组礼物。
+        # 所有礼物都写入 CSV，且都下发给界面，展示门槛由 GUI 的输入框决定，
+        # 供网页版按天汇总礼物榜；界面仍然只展示 >=50 钻的整组礼物。
         data = dict(
             msg_id=msg_id,
             user_id=uid,
@@ -1005,15 +1249,19 @@ class DanmakuClient(DouyinLiveWebFetcher):
             gift_count=group_total,
             diamonds=total_diamonds,
             group_id=str(group) if group else "",
-            visible=1 if total_diamonds > 90 else 0,
+            visible=1 if total_diamonds >= GIFT_SHOW_MIN else 0,
             group_key=str(group) if group else msg_id,
+            added=diamonds,
+            session_diamonds=self._gift_diamonds,
+            payers=len(self._payers),
+            fan_payers=len(self._fan_payers),
         )
         self._write_csv("gift", **data)
 
         # 连击的 repeat_count 是累计值：界面按整组累计总价判断，
         # 例如 100 个 1 钻小心心，不应被拆成 10 个 10 钻而过滤掉。
         already = self._gift_group_emitted.get(group, -1) if group else -1
-        if total_diamonds > 90 and group_total != already:
+        if group_total != already:
             self._gift_group_emitted[group] = group_total if group else total_diamonds
             self._emit("gift", **data)
             # 面板里出现新行时立刻同步汇总，别让「礼物总额」落后于可见礼物
@@ -1150,7 +1398,7 @@ class DanmakuClient(DouyinLiveWebFetcher):
         message = FansclubMessage().parse(payload)
         self._remember_user(message.user)
         self._record_membership(
-            content=message.content,
+            content=_text_value(message.content),
             msg_id=str(message.common_info.msg_id or ""),
             user=message.user,
         )
@@ -1158,7 +1406,7 @@ class DanmakuClient(DouyinLiveWebFetcher):
     def _parseRoomMsg(self, payload):
         message = RoomMessage().parse(payload)
         self._record_membership(
-            content=message.content,
+            content=_text_value(message.content),
             msg_id=str(message.common.msg_id or ""),
             user=self._notice_member_user(message.content),
         )
@@ -1232,12 +1480,15 @@ class DanmakuClient(DouyinLiveWebFetcher):
             gift_count=1,
             diamonds=price,
             group_id="",
-            visible=1 if price > 90 else 0,
+            visible=1 if price >= GIFT_SHOW_MIN else 0,
             group_key=msg_id or f"member-{uid}-{int(time.time())}",
+            added=price,
+            session_diamonds=self._gift_diamonds,
+            payers=len(self._payers),
+            fan_payers=len(self._fan_payers),
         )
         self._write_csv("gift", **data)
-        if price > 90:
-            self._emit("gift", **data)
+        self._emit("gift", **data)
         self._emit_summary()
 
     def _parseControlMsg(self, payload):
@@ -1681,7 +1932,7 @@ class DanmakuApp:
         self.entry_placeholder.place(relx=0.5, rely=0.55, anchor="center")
 
         self.gift_card, gift_body, self.gift_badge = self._make_card(
-            body, "礼物", "整组累计 >90 钻；显示 ID / 名称 / 数量 / 钻石"
+            body, "礼物", "整组累计 >=50 钻；显示 ID / 名称 / 数量 / 钻石"
         )
         self.gift_card.grid(row=1, column=1, sticky="nsew")
         self._build_gift_list(gift_body)
@@ -1791,7 +2042,7 @@ class DanmakuApp:
             return
         self.gift_placeholder = tk.Label(
             self.gift_inner,
-            text="高价值礼物会显示在这里\n单条 / 整组累计 > 90 钻",
+            text="高价值礼物会显示在这里\n单条 / 整组累计 >= 50 钻",
             bg=CARD,
             fg="#94a3b8",
             font=(FONT, 9),
