@@ -4,6 +4,9 @@ dist/
 build/
 dist_badge_test/
 build_badge_test/
+build_*/
+dist_*/
+*.bak*
 release/
 *.spec
 !DouyinDanmaku.spec
