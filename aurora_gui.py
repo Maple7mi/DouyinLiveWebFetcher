@@ -354,6 +354,7 @@ class AuroraApp:
         self.total_events = 0
         self.gift_rows: dict[str, dict] = {}
         self.gift_order: list[str] = []
+        self._gift_total_diamonds = 0
         self.chat_rows: list[dict] = []
         self._photo_cache: dict[str, tk.PhotoImage] = {}
         self._rich_cache: dict[tuple, tk.PhotoImage] = {}
@@ -1755,6 +1756,17 @@ class AuroraApp:
             pass
         return txt
 
+    def _refresh_gift_foot(self):
+        """脚注同时给出总钻数，避免「总额比面板里单个礼物还小」的观感矛盾。"""
+        count = len(self.gift_order)
+        total = getattr(self, "_gift_total_diamonds", 0)
+        if total:
+            self.gift_foot_var.set(
+                f"仅显示整组累计 >90 钻 · 共 {count} 条 · 合计 {fmt_int(total)} 钻"
+            )
+        else:
+            self.gift_foot_var.set(f"仅显示整组累计 >90 钻 · 共 {count} 条")
+
     def _add_gift_row(self, event: dict) -> dict:
         try:
             pinned = self.gift_canvas.yview()[1] > 0.999
@@ -1772,7 +1784,7 @@ class AuroraApp:
             if old_info:
                 old_info["frame"].destroy()
         self.gift_badge.configure(text=str(len(self.gift_order)))
-        self.gift_foot_var.set(f"仅显示整组累计 >90 钻 · 共 {len(self.gift_order)} 条")
+        self._refresh_gift_foot()
         self.gift_canvas.update_idletasks()
         self._fit_gift_rows()
         self._sync_gift_scroll()
@@ -2047,6 +2059,8 @@ class AuroraApp:
             diamonds = event.get("gift_diamonds")
             if diamonds is not None:
                 self.summary_vars["gift"].set(fmt_int(diamonds))
+                self._gift_total_diamonds = int(diamonds)
+                self._refresh_gift_foot()
             pv = event.get("pv")
             if pv:
                 self._pv_text = str(pv)

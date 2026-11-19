@@ -208,6 +208,7 @@ class DanmakuClient(DouyinLiveWebFetcher):
         self._gift_diamonds = 0
         self._msg_count = 0
         self._last_summary = 0.0
+        self._summary_timer: threading.Timer | None = None
         self._csv_file = None
         self._csv_writer = None
         self._gift_raw = None
@@ -595,7 +596,17 @@ class DanmakuClient(DouyinLiveWebFetcher):
     def _emit_summary(self, force: bool = False):
         now = time.monotonic()
         if not force and now - self._last_summary < 0.4:
+            # 限流期间来的更新不能直接丢掉：排一个 trailing 发送，
+            # 否则最后一笔礼物/付费人数永远显示不出来（会出现
+            # 「礼物总额 234 钻，但面板里单个礼物 299 钻」这种矛盾）。
+            if self._summary_timer is None:
+                delay = max(0.05, 0.4 - (now - self._last_summary))
+                timer = threading.Timer(delay, self._emit_summary_trailing)
+                timer.daemon = True
+                self._summary_timer = timer
+                timer.start()
             return
+        self._summary_timer = None
         self._last_summary = now
         self._emit(
             "summary",
@@ -608,6 +619,10 @@ class DanmakuClient(DouyinLiveWebFetcher):
             pv=self._pv,
             msg_count=self._msg_count,
         )
+
+    def _emit_summary_trailing(self):
+        self._summary_timer = None
+        self._emit_summary(force=True)
 
     # -- 消息解析 ---------------------------------------------------------
     def _wsOnOpen(self, ws):
@@ -975,6 +990,8 @@ class DanmakuClient(DouyinLiveWebFetcher):
         if total_diamonds > 90 and group_total != already:
             self._gift_group_emitted[group] = group_total if group else total_diamonds
             self._emit("gift", **data)
+            # 面板里出现新行时立刻同步汇总，别让「礼物总额」落后于可见礼物
+            self._emit_summary(force=True)
         if message.repeat_end and group:
             self._gift_group_total.pop(group, None)
             self._gift_group_emitted.pop(group, None)
