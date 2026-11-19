@@ -363,6 +363,7 @@ class AuroraApp:
         self._online_text = "--"
         self._last_auto_export_events = -1
         self._auto_export_job = None
+        self._auto_exported_on_end = False
         self.site_server = None
         self._site_server_dir: Path | None = None
         self.login_thread: threading.Thread | None = None
@@ -1917,6 +1918,17 @@ class AuroraApp:
         finally:
             self._auto_export_job = self.root.after(120_000, self._auto_export_loop)
 
+    def _export_after_stream_end(self):
+        """主播下播：把本场日志导出成归档站点，并直接打开浏览器页面。"""
+        try:
+            if self.total_events <= 0:
+                return
+            if self.export_site(open_browser=True, quiet=True):
+                self.hint_var.set("直播已结束 · 已自动导出归档并打开页面")
+                self._last_auto_export_events = self.total_events
+        except Exception:
+            pass
+
     def export_site(self, open_browser: bool = True, quiet: bool = False) -> bool:
         try:
             import site_builder
@@ -2103,6 +2115,12 @@ class AuroraApp:
                 self.disconnect_btn.configure(state="disabled", fg=MUTED)
             if state == "connected" and self.client and self.client.csv_path:
                 self.csv_var.set(f"CSV: {self.client.csv_path}")
+            if state == "connected":
+                self._auto_exported_on_end = False
+            elif state == "ended" and not self._auto_exported_on_end:
+                # 下播后自动导出归档并打开浏览器页面（只做一次，留 1.5s 让尾包落盘）
+                self._auto_exported_on_end = True
+                self.root.after(1500, self._export_after_stream_end)
         elif kind == "error":
             self.hint_var.set(event.get("text", ""))
 
