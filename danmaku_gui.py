@@ -209,6 +209,8 @@ class DanmakuClient(DouyinLiveWebFetcher):
         self._msg_count = 0
         self._last_summary = 0.0
         self._summary_timer: threading.Timer | None = None
+        self._ending = False
+        self._resume_wait_after = 0.0
         self._csv_file = None
         self._csv_writer = None
         self._gift_raw = None
@@ -233,6 +235,9 @@ class DanmakuClient(DouyinLiveWebFetcher):
                     self._emit("status", state="error", text=f"连接失败：{exc}")
                 if self._stop.is_set():
                     break
+                if self._resume_wait_after and time.monotonic() < self._resume_wait_after:
+                    # 刚下播：直接回到等待循环，不显示「重连」提示
+                    continue
                 self._emit("status", state="reconnecting", text="连接断开，5 秒后重连…")
                 if self._stop.wait(5):
                     break
@@ -258,6 +263,12 @@ class DanmakuClient(DouyinLiveWebFetcher):
     def _wait_until_live(self) -> bool:
         """未开播时保持等待，开播后再建立 WebSocket。"""
         while not self._stop.is_set():
+            if self._resume_wait_after and time.monotonic() < self._resume_wait_after:
+                # 刚下播：抖音页面可能还挂着旧状态，先冷一会儿再判
+                self._emit("status", state="waiting", text="直播已结束 · 等待下一场…")
+                if self._stop.wait(5):
+                    return False
+                continue
             live = self.is_room_live()
             if live is not False:
                 return True
@@ -265,6 +276,17 @@ class DanmakuClient(DouyinLiveWebFetcher):
             if self._stop.wait(5):
                 return False
         return False
+
+    def _enter_wait_after_end(self):
+        """主播下播：关掉当前连接，回到「等待开播」等下一场自动接上。"""
+        self._ending = True
+        self._resume_wait_after = time.monotonic() + 20
+        ws = getattr(self, "ws", None)
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
 
     def stop(self):
         self._stop.set()
@@ -630,6 +652,10 @@ class DanmakuClient(DouyinLiveWebFetcher):
         threading.Thread(target=self._sendHeartbeat, daemon=True).start()
 
     def _wsOnClose(self, ws, *args):
+        if self._ending:
+            # 下播主动断开，不要报「连接断开」，状态交给等待循环
+            self._ending = False
+            return
         self._emit("status", state="disconnected", text="连接断开")
 
     def _wsOnError(self, ws, error):
@@ -1218,7 +1244,7 @@ class DanmakuClient(DouyinLiveWebFetcher):
         message = ControlMessage().parse(payload)
         if int(message.status or 0) == 3:
             self._emit("status", state="ended", text="直播已结束")
-            self.stop()
+            self._enter_wait_after_end()
 
     def _parseRankMsg(self, payload):
         pass

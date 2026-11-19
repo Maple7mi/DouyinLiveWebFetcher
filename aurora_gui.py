@@ -1918,14 +1918,31 @@ class AuroraApp:
         finally:
             self._auto_export_job = self.root.after(120_000, self._auto_export_loop)
 
-    def _export_after_stream_end(self):
+    def _handle_stream_ended(self):
+        """下播：先清空窗口数据，再自动导出归档并打开浏览器页面。"""
+        if self._auto_exported_on_end:
+            return
+        self._auto_exported_on_end = True
+        had_events = self.total_events
+        self._clear_feed()
+        if self.chat_placeholder is not None:
+            self.chat_placeholder.configure(text="直播已结束，等待下一场…")
+            self.chat_placeholder.place(relx=0.5, rely=0.5, anchor="center")
+        self._set_status("直播已结束 · 正在导出归档…", GOLD)
+        self.hint_var.set("直播已结束 · 正在导出归档…")
+        self.root.after(1200, lambda: self._export_after_stream_end(had_events))
+
+    def _export_after_stream_end(self, had_events: int | None = None):
         """主播下播：把本场日志导出成归档站点，并直接打开浏览器页面。"""
         try:
-            if self.total_events <= 0:
+            events = self.total_events if had_events is None else had_events
+            if events <= 0:
                 return
             if self.export_site(open_browser=True, quiet=True):
                 self.hint_var.set("直播已结束 · 已自动导出归档并打开页面")
-                self._last_auto_export_events = self.total_events
+                self._set_status("直播已结束 · 归档已打开", MUTED)
+                # 下一场会有新数据，让定期导出重新生效
+                self._last_auto_export_events = -1
         except Exception:
             pass
 
@@ -2117,10 +2134,8 @@ class AuroraApp:
                 self.csv_var.set(f"CSV: {self.client.csv_path}")
             if state == "connected":
                 self._auto_exported_on_end = False
-            elif state == "ended" and not self._auto_exported_on_end:
-                # 下播后自动导出归档并打开浏览器页面（只做一次，留 1.5s 让尾包落盘）
-                self._auto_exported_on_end = True
-                self.root.after(1500, self._export_after_stream_end)
+            elif state == "ended":
+                self._handle_stream_ended()
         elif kind == "error":
             self.hint_var.set(event.get("text", ""))
 
