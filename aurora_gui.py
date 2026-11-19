@@ -306,6 +306,7 @@ ADMIN_BODY = "#f2ffd0"
 CHAT_LIMIT = 500
 CONTRIB_VISIBLE = 5
 CONTRIB_KEEP = 50  # 榜单最多保留的贡献人数
+EXPORT_CODE_FILE = "export_code.txt"  # 权限码放在程序目录的本机文件里，不进仓库
 _SINGLE_MUTEX = None
 
 
@@ -365,6 +366,7 @@ class AuroraApp:
         self.gift_order: list[str] = []
         self.gift_min = GIFT_MIN_DEFAULT
         self._gift_seen: list[dict] = []
+        self._end_dialog = None
         self._contrib: dict[str, dict] = {}
         self._contrib_offset = 0
         self._online_text = "--"
@@ -2133,8 +2135,9 @@ class AuroraApp:
         if self.chat_placeholder is not None:
             self.chat_placeholder.configure(text="直播已结束，等待下一场…")
             self.chat_placeholder.place(relx=0.5, rely=0.5, anchor="center")
-        self._set_status("直播已结束 · 需要归档请点「导出」", GOLD)
-        self.hint_var.set("直播已结束 · 点「导出」可归档并打开页面")
+        self._set_status("直播已结束 · 请输入权限码归档", GOLD)
+        self.hint_var.set("直播已结束 · 输入权限码可自动导出归档")
+        self.root.after(600, self._ask_export_code)
 
     def _export_after_stream_end(self, had_events: int | None = None):
         """主播下播：把本场日志导出成归档站点，并直接打开浏览器页面。"""
@@ -2143,12 +2146,134 @@ class AuroraApp:
             if events <= 0:
                 return
             if self.export_site(open_browser=True, quiet=True):
-                self.hint_var.set("直播已结束 · 已自动导出归档并打开页面")
+                self.hint_var.set("直播已结束 · 已导出归档并打开页面")
                 self._set_status("直播已结束 · 归档已打开", MUTED)
                 # 下一场会有新数据，让定期导出重新生效
                 self._last_auto_export_events = -1
         except Exception:
             pass
+
+    def export_code(self) -> str:
+        """权限码来源：环境变量 DANMAKU_EXPORT_CODE > 程序目录 export_code.txt。"""
+        env = str(os.environ.get("DANMAKU_EXPORT_CODE", "")).strip()
+        if env:
+            return env
+        try:
+            path = app_dir() / EXPORT_CODE_FILE
+            if path.exists():
+                return path.read_text(encoding="utf-8-sig").strip()
+        except Exception:
+            pass
+        return ""
+
+    def _ask_export_code(self) -> None:
+        """下播后弹权限码窗口：码对 -> 自动导出；关掉/取消 -> 不导出。"""
+        if self._end_dialog is not None:
+            try:
+                if self._end_dialog.winfo_exists():
+                    self._end_dialog.lift()
+                    return
+            except tk.TclError:
+                pass
+            self._end_dialog = None
+        if self.total_events <= 0:
+            return
+
+        win = tk.Toplevel(self.root)
+        self._end_dialog = win
+        win.title("直播已结束")
+        win.configure(bg=CARD)
+        win.resizable(False, False)
+        win.transient(self.root)
+        win.overrideredirect(True)
+
+        width, height = 430, 296
+        self.root.update_idletasks()
+        px = self.root.winfo_rootx() + (self.root.winfo_width() - width) // 2
+        py = self.root.winfo_rooty() + (self.root.winfo_height() - height) // 2
+        win.geometry(f"{width}x{height}+{max(0, px)}+{max(0, py)}")
+
+        shell = tk.Frame(win, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
+        shell.pack(fill="both", expand=True)
+
+        head = tk.Frame(shell, bg=CARD)
+        head.pack(fill="x", padx=22, pady=(16, 0))
+        tk.Label(head, text="直播已结束", bg=CARD, fg=FG, font=(FONT, 18, "bold")).pack(side="left")
+        close_lbl = tk.Label(head, text="✕", bg=CARD, fg=MUTED, font=(FONT, 13, "bold"), cursor="hand2")
+        close_lbl.pack(side="right")
+
+        tk.Frame(shell, bg=BORDER, height=1).pack(fill="x", padx=22, pady=(12, 0))
+
+        # 按钮区先占住底部，避免内容把按钮挤出窗口
+        actions = tk.Frame(shell, bg=CARD)
+        actions.pack(side="bottom", fill="x", padx=22, pady=(10, 16))
+        ok_btn = tk.Button(
+            actions, text="导出归档", command=lambda: submit(),
+            bg=ACCENT, fg="#ffffff", activebackground="#6a4cf0", activeforeground="#ffffff",
+            font=(FONT, 12, "bold"), relief="flat", bd=0, padx=18, pady=6, cursor="hand2",
+        )
+        ok_btn.pack(side="right")
+        cancel_btn = tk.Button(
+            actions, text="取消", command=lambda: close(None),
+            bg="#1e2432", fg="#c8d0de", activebackground="#28303f", activeforeground=FG,
+            font=(FONT, 12), relief="flat", bd=0, padx=18, pady=6, cursor="hand2",
+        )
+        cancel_btn.pack(side="right", padx=(0, 10))
+
+        tk.Label(
+            shell,
+            text="输入权限码后自动导出本场归档，并打开浏览器页面。",
+            bg=CARD, fg=MUTED, font=(FONT, 11),
+            wraplength=width - 48, justify="left",
+        ).pack(anchor="w", padx=22, pady=(12, 0))
+        tk.Label(shell, text="权限码", bg=CARD, fg=MUTED, font=(FONT, 10)).pack(anchor="w", padx=22, pady=(8, 2))
+
+        entry = tk.Entry(
+            shell, show="●", bg=FIELD, fg=FG, insertbackground=FG,
+            font=(FONT, 16), relief="flat", highlightthickness=1,
+            highlightbackground=BORDER, highlightcolor=ACCENT,
+        )
+        entry.pack(fill="x", padx=22, ipady=8)
+
+        error = tk.Label(shell, text="", bg=CARD, fg="#ff5d73", font=(FONT, 10))
+        error.pack(anchor="w", padx=22, pady=(4, 0))
+
+        expected = self.export_code()
+        if not expected:
+            error.configure(
+                text=f"未配置权限码：在程序目录新建 {EXPORT_CODE_FILE} 写入权限码",
+                fg="#e8c36a",
+            )
+
+        def close(exported):
+            if not exported:
+                self._set_status("直播已结束 · 未导出（可点「导出」）", MUTED)
+                self.hint_var.set("直播已结束 · 需要归档时点右上角「导出」")
+            try:
+                win.grab_release()
+            except tk.TclError:
+                pass
+            win.destroy()
+            self._end_dialog = None
+
+        def submit():
+            if not expected:
+                return
+            if entry.get().strip() == expected:
+                close(True)
+                self._export_after_stream_end(self.total_events)
+                return
+            error.configure(text="权限码不正确，无法自动导出")
+            entry.configure(highlightbackground="#ff5d73", highlightcolor="#ff5d73")
+            entry.selection_range(0, "end")
+            entry.focus_set()
+
+        entry.bind("<Return>", lambda _e: submit())
+        win.bind("<Escape>", lambda _e: close(None))
+        close_lbl.bind("<Button-1>", lambda _e: close(None))
+
+        win.grab_set()
+        entry.focus_set()
 
     def export_site(self, open_browser: bool = True, quiet: bool = False) -> bool:
         try:
@@ -2311,6 +2436,13 @@ class AuroraApp:
             if msg_count:
                 self.hint_var.set(f"已接收 {fmt_int(msg_count)} 条消息")
         elif kind == "status":
+            if event.get("state") == "connected" and self._end_dialog is not None:
+                try:
+                    self._end_dialog.grab_release()
+                    self._end_dialog.destroy()
+                except tk.TclError:
+                    pass
+                self._end_dialog = None
             state = event.get("state")
             text = event.get("text", "")
             color = {
@@ -2491,6 +2623,9 @@ def main():
         app.room_var.set(room)
     if "--auto-connect" in sys.argv:
         root.after(900, app.connect)
+    if "--preview-end" in sys.argv:
+        app.total_events = 1
+        root.after(1500, app._ask_export_code)
     root._app = app
     root.mainloop()
 

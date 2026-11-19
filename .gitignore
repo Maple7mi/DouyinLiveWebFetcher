@@ -62,3 +62,7 @@ _*.py
 _*.bin
 _*.txt
 
+
+# 本机权限码，不提交
+export_code.txt
+release/**/export_code.txt
