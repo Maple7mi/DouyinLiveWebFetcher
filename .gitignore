@@ -33,6 +33,11 @@ docs/__tmp_*.png
 _probe_*.py
 _preview_*.py
 _patch_*.py
+_test_*.py
+_scan_*.py
+_uniemoji_*.py
+_verify_*.py
+_zoom_*.py
 _club_*.py
 _mk*.py
 _check_*.py
