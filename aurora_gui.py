@@ -661,8 +661,12 @@ class AuroraApp:
         tk.Label(
             top_card, text="滚轮翻看 · 保留前 50", bg=CARD, fg="#657187", font=(FONT, 9)
         ).pack(anchor="w", padx=12, pady=(2, 8))
-        for widget in (top_card, top_head, self.contrib_body):
+        def _bind_wheel(widget):
             widget.bind("<MouseWheel>", self._on_contrib_wheel)
+            for child in widget.winfo_children():
+                _bind_wheel(child)
+
+        _bind_wheel(top_card)
 
         # 礼物
         gift_card = tk.Frame(parent, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
@@ -1850,9 +1854,8 @@ class AuroraApp:
 
     def _on_contrib_wheel(self, event):
         step = -1 if event.delta > 0 else 1
-        self._contrib_offset = max(
-            0, min(self._contrib_offset + step, max(0, len(self._contrib) - 1))
-        )
+        max_off = max(0, len(self._contrib) - CONTRIB_VISIBLE)
+        self._contrib_offset = max(0, min(self._contrib_offset + step, max_off))
         self._refresh_contrib()
         return "break"
 
@@ -1861,7 +1864,10 @@ class AuroraApp:
             self._contrib.values(), key=lambda r: -int(r.get("diamonds") or 0)
         )[:CONTRIB_KEEP]
         self.contrib_badge.configure(text=fmt_int(len(items)))
-        start = min(self._contrib_offset, max(0, len(items) - 1))
+        self._contrib_offset = min(
+            self._contrib_offset, max(0, len(items) - CONTRIB_VISIBLE)
+        )
+        start = self._contrib_offset
         window = items[start : start + CONTRIB_VISIBLE]
         for idx, (row, rank, name, value) in enumerate(self.contrib_cells):
             if idx < len(window):
@@ -1873,6 +1879,9 @@ class AuroraApp:
                 row.pack(fill="x", pady=1)
             else:
                 row.pack_forget()
+        for cell in self.contrib_cells:
+            for widget in cell:
+                widget.bind("<MouseWheel>", self._on_contrib_wheel)
 
     def _add_contrib(self, event: dict) -> None:
         uid = str(event.get("user_id") or "")
@@ -2116,18 +2125,16 @@ class AuroraApp:
             self._auto_export_job = self.root.after(120_000, self._auto_export_loop)
 
     def _handle_stream_ended(self):
-        """下播：先清空窗口数据，再自动导出归档并打开浏览器页面。"""
+        """下播：清空窗口数据并等待下一场；归档导出改为手动（点「导出」）。"""
         if self._auto_exported_on_end:
             return
         self._auto_exported_on_end = True
-        had_events = self.total_events
         self._clear_feed()
         if self.chat_placeholder is not None:
             self.chat_placeholder.configure(text="直播已结束，等待下一场…")
             self.chat_placeholder.place(relx=0.5, rely=0.5, anchor="center")
-        self._set_status("直播已结束 · 正在导出归档…", GOLD)
-        self.hint_var.set("直播已结束 · 正在导出归档…")
-        self.root.after(1200, lambda: self._export_after_stream_end(had_events))
+        self._set_status("直播已结束 · 需要归档请点「导出」", GOLD)
+        self.hint_var.set("直播已结束 · 点「导出」可归档并打开页面")
 
     def _export_after_stream_end(self, had_events: int | None = None):
         """主播下播：把本场日志导出成归档站点，并直接打开浏览器页面。"""
